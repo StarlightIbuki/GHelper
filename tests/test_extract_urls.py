@@ -1,10 +1,10 @@
-"""Tests for gh_rerunner — stdin / backport-tracker output parsing."""
+"""Tests for ghelper — stdin / backport-tracker output parsing."""
 from __future__ import annotations
 
 from typing import Optional
 import pytest
 
-from gh_rerunner.cli import _extract_urls, _parse_summary
+from ghelper.cli import _extract_urls, _parse_summary
 
 
 # ---------------------------------------------------------------------------
@@ -21,7 +21,7 @@ def bp_summary(*entries: tuple[str, str, str], ignore_ci: Optional[list[str]] = 
     """
     lines = []
     if ignore_ci:
-        lines.append(f"# gh-rerunner: ignore_ci={','.join(ignore_ci)}")
+        lines.append(f"# ghelper: ignore_ci={','.join(ignore_ci)}")
     lines.extend(f"[{s}] {b}: {u}" for s, b, u in entries)
     return "\n".join(lines)
 
@@ -36,7 +36,7 @@ def bp_markdown_summary(
     lines = [f"# Backport PRs for \"{title}\" #{pr_number}"]
     if metadata:
         attrs = " ".join(f'{k}="{v}"' for k, v in metadata.items())
-        lines.append(f"<!-- gh-rerunner: {attrs} -->")
+        lines.append(f"<!-- ghelper: {attrs} -->")
     lines.extend(f"- [{branch}]({url}) {detail}" for branch, url, detail in entries)
     return "\n".join(lines)
 
@@ -231,12 +231,12 @@ class TestParseSummary:
         assert result.metadata["ignore_ci"] == "lint,build-docs,typecheck"
 
     def test_ignore_ci_header_with_spaces_around_commas(self):
-        text = "# gh-rerunner: ignore_ci=lint , build , typecheck\n[OPEN] x: https://github.com/org/repo/pull/1"
+        text = "# ghelper: ignore_ci=lint , build , typecheck\n[OPEN] x: https://github.com/org/repo/pull/1"
         result = _parse_summary(text)
         assert result.ignore_ci == ["lint", "build", "typecheck"]
 
     def test_ignore_ci_header_case_insensitive(self):
-        text = "# GH-RERUNNER: IGNORE_CI=Lint,Build\n[OPEN] x: https://github.com/org/repo/pull/1"
+        text = "# GHELPER: IGNORE_CI=Lint,Build\n[OPEN] x: https://github.com/org/repo/pull/1"
         result = _parse_summary(text)
         assert result.ignore_ci == ["Lint", "Build"]
 
@@ -288,10 +288,10 @@ class TestParseSummary:
 
     def test_v2_metadata_headers_are_parsed(self):
         text = "\n".join([
-            "# gh-rerunner: format=2",
-            "# gh-rerunner: source_pr=https://github.com/org/repo/pull/999",
-            "# gh-rerunner: source_pr_description_b64=UFIgZGVzY3JpcHRpb24=",
-            "# gh-rerunner: ignore_ci=lint,build",
+            "# ghelper: format=2",
+            "# ghelper: source_pr=https://github.com/org/repo/pull/999",
+            "# ghelper: source_pr_description_b64=UFIgZGVzY3JpcHRpb24=",
+            "# ghelper: ignore_ci=lint,build",
             "[OPEN] next/3.12.x: https://github.com/org/repo/pull/1 | ci=passed=2,failed=0",
         ])
         result = _parse_summary(text)
@@ -335,7 +335,7 @@ class TestParseSummary:
     def test_markdown_meta_only_does_not_create_targets(self):
         text = "\n".join([
             '# Backport PRs for "Fix" #100',
-            '<!-- gh-rerunner: source_pr="https://github.com/org/repo/pull/100" ignore_ci="lint" -->',
+            '<!-- ghelper: source_pr="https://github.com/org/repo/pull/100" ignore_ci="lint" -->',
         ])
         result = _parse_summary(text)
         assert result.entries == []
@@ -353,8 +353,8 @@ class TestParseSummary:
 
     def test_metadata_header_url_not_used_as_fallback_target(self):
         text = "\n".join([
-            "# gh-rerunner: source_pr=https://github.com/org/repo/pull/999",
-            "# gh-rerunner: format=2",
+            "# ghelper: source_pr=https://github.com/org/repo/pull/999",
+            "# ghelper: format=2",
         ])
         result = _parse_summary(text)
         assert result.entries == []
@@ -365,3 +365,101 @@ class TestParseSummary:
         assert result.entries == []
         assert result.ignore_ci == []
         assert result.metadata == {}
+        assert result.title == ""
+        assert result.missing == []
+
+
+# ---------------------------------------------------------------------------
+# Title line + [MISSING] (no-URL) rows
+# ---------------------------------------------------------------------------
+
+class TestTitleAndMissingEntries:
+    """A leading title line is captured and status rows without a URL are
+    surfaced as `missing` rather than dropped or treated as watch targets."""
+
+    KONG_EXAMPLE = "\n".join([
+        "fix(plugins): oidc compliance of redirect_uri in different grant_types",
+        "[MISSING] next/3.10.x.x",
+        "[MISSING] next/3.11.x.x",
+        "[MISSING] next/3.12.x.x",
+        "[MISSING] next/3.13.x.x",
+        "[MERGED] next/3.14.x.x: https://github.com/Kong/kong-ee/pull/18741",
+        "[MERGED] ai-master: https://github.com/Kong/kong-ee/pull/18745",
+    ])
+
+    def test_kong_example_title_entries_and_missing(self):
+        result = _parse_summary(self.KONG_EXAMPLE)
+        assert result.title == (
+            "fix(plugins): oidc compliance of redirect_uri in different grant_types"
+        )
+        assert [(e.status, e.branch, e.url) for e in result.entries] == [
+            ("merged", "next/3.14.x.x", "https://github.com/Kong/kong-ee/pull/18741"),
+            ("merged", "ai-master", "https://github.com/Kong/kong-ee/pull/18745"),
+        ]
+        assert [(e.status, e.branch) for e in result.missing] == [
+            ("missing", "next/3.10.x.x"),
+            ("missing", "next/3.11.x.x"),
+            ("missing", "next/3.12.x.x"),
+            ("missing", "next/3.13.x.x"),
+        ]
+
+    def test_missing_entries_have_no_url(self):
+        result = _parse_summary(self.KONG_EXAMPLE)
+        assert all(e.url == "" for e in result.missing)
+
+    def test_url_bearing_entries_capture_branch(self):
+        text = bp_summary(
+            ("MERGED", "next/3.10.x", "https://github.com/org/repo/pull/10"),
+        )
+        result = _parse_summary(text)
+        assert result.entries[0].branch == "next/3.10.x"
+
+    def test_no_title_when_entries_come_first(self):
+        text = bp_summary(
+            ("MERGED", "next/3.10.x", "https://github.com/org/repo/pull/10"),
+        )
+        result = _parse_summary(text)
+        assert result.title == ""
+
+    def test_markdown_heading_is_captured_as_title(self):
+        text = "\n".join([
+            '# Backport PRs for "Fix" #100',
+            "[MERGED] next/3.10.x: https://github.com/org/repo/pull/10",
+        ])
+        result = _parse_summary(text)
+        assert result.title == 'Backport PRs for "Fix" #100'
+
+    def test_metadata_header_is_not_treated_as_title(self):
+        text = "\n".join([
+            "# ghelper: ignore_ci=lint",
+            "fix(x): something",
+            "[MISSING] next/3.10.x",
+        ])
+        result = _parse_summary(text)
+        assert result.title == "fix(x): something"
+
+    def test_missing_rows_are_deduplicated(self):
+        text = "\n".join([
+            "[MISSING] next/3.10.x",
+            "[MISSING] next/3.10.x",
+        ])
+        result = _parse_summary(text)
+        assert [(e.status, e.branch) for e in result.missing] == [
+            ("missing", "next/3.10.x"),
+        ]
+
+    def test_bare_url_has_no_title_or_missing(self):
+        result = _parse_summary("https://github.com/org/repo/pull/99")
+        assert result.title == ""
+        assert result.missing == []
+
+    def test_all_missing_input_yields_no_watch_targets(self):
+        text = "\n".join([
+            "fix(plugins): oidc compliance",
+            "[MISSING] next/3.10.x.x",
+            "[MISSING] next/3.11.x.x",
+        ])
+        result = _parse_summary(text)
+        assert result.entries == []
+        assert len(result.missing) == 2
+        assert result.title == "fix(plugins): oidc compliance"

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "gh-rerunner"
+name = "ghelper"
 version = "0.1.0"
 description = "Headless GitHub Actions CI auto-rerunner"
 requires-python = ">=3.9"
@@ -20,17 +20,17 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-gh-rerunner = "gh_rerunner.cli:main"
+ghelper = "ghelper.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/gh_rerunner"]
+packages = ["src/ghelper"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/gh_rerunner/web/pages/index.html" = "gh_rerunner/web/pages/index.html"
-"src/gh_rerunner/web/pages/auth.html" = "gh_rerunner/web/pages/auth.html"
-"src/gh_rerunner/web/pages/add-targets.html" = "gh_rerunner/web/pages/add-targets.html"
-"src/gh_rerunner/web/static/common.css" = "gh_rerunner/web/static/common.css"
-"src/gh_rerunner/web/static/common.js" = "gh_rerunner/web/static/common.js"
+"src/ghelper/web/pages/index.html" = "ghelper/web/pages/index.html"
+"src/ghelper/web/pages/auth.html" = "ghelper/web/pages/auth.html"
+"src/ghelper/web/pages/add-targets.html" = "ghelper/web/pages/add-targets.html"
+"src/ghelper/web/static/common.css" = "ghelper/web/static/common.css"
+"src/ghelper/web/static/common.js" = "ghelper/web/static/common.js"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

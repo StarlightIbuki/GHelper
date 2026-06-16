@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import click
 
-from gh_rerunner.cli import (
+from ghelper.cli import (
     _build_pr_display_meta,
     _clean_pr_title,
     _count_approved_reviews,
@@ -35,7 +35,7 @@ def test_format_markdown_summary_matches_backport_style():
 
     assert text == "\n".join([
         '# Assigned PRs for @octo',
-        '<!-- gh-rerunner: format="2" source="assigned-prs" assignee="octo" -->',
+        '<!-- ghelper: format="2" source="assigned-prs" assignee="octo" -->',
         '- [feature-a](https://github.com/org/repo/pull/1) CI pending',
         '- [feature-b](https://github.com/org/repo/pull/2) CI failed',
     ])
@@ -217,7 +217,7 @@ def test_extract_backport_source_pr():
 
 
 def test_session_save_and_load(tmp_path, monkeypatch):
-    import gh_rerunner.cli as cli_mod
+    import ghelper.cli as cli_mod
     session_file = tmp_path / "sessions.json"
     monkeypatch.setattr(cli_mod, "_SESSION_PATH", session_file)
 
@@ -229,7 +229,7 @@ def test_session_save_and_load(tmp_path, monkeypatch):
 
 
 def test_session_resolve_ref(tmp_path, monkeypatch):
-    import gh_rerunner.cli as cli_mod
+    import ghelper.cli as cli_mod
     session_file = tmp_path / "sessions.json"
     monkeypatch.setattr(cli_mod, "_SESSION_PATH", session_file)
 

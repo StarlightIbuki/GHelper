@@ -1,4 +1,4 @@
-"""Core CLI and polling logic for gh-rerunner."""
+"""Core CLI and polling logic for ghelper."""
 from __future__ import annotations
 
 import asyncio
@@ -71,16 +71,16 @@ _SKIP_STATUSES = {"merged", "success", "closed"}
 _WARN_STATUSES = {"fetching"}
 
 # Header lines emitted by backport-tracker:
-#   # gh-rerunner: key=value
+#   # ghelper: key=value
 _HEADER_RE = re.compile(
-    r"^#\s*gh-rerunner:\s*(?P<key>[a-z0-9_\-]+)=(?P<value>[^\r\n]*)$",
+    r"^#\s*ghelper:\s*(?P<key>[a-z0-9_\-]+)=(?P<value>[^\r\n]*)$",
     re.MULTILINE | re.IGNORECASE,
 )
 
 # Markdown metadata comment emitted by backport-tracker, e.g.:
-#   <!-- gh-rerunner: ignore_ci="lint,build" source_pr="..." -->
+#   <!-- ghelper: ignore_ci="lint,build" source_pr="..." -->
 _META_COMMENT_RE = re.compile(
-    r"^\s*<!--\s*gh-rerunner:\s*(?P<body>.*?)\s*-->\s*$",
+    r"^\s*<!--\s*ghelper:\s*(?P<body>.*?)\s*-->\s*$",
     re.IGNORECASE,
 )
 
@@ -91,12 +91,18 @@ _META_ATTR_RE = re.compile(
 
 # Summary entry line:  [STATUS] branch: URL
 _ENTRY_RE = re.compile(
-    r"^\[(?P<status>[A-Z_]+)\]\s+[^:]+:\s+(?P<url>https://github\.com/\S+)\s*$",
+    r"^\[(?P<status>[A-Z_]+)\]\s+(?P<branch>[^:]+):\s+(?P<url>https://github\.com/\S+)\s*$",
+)
+
+# Status-prefixed line that carries no PR URL, e.g. "[MISSING] next/3.10.x.x".
+# Used to surface branches that still need a backport (no PR to watch yet).
+_ENTRY_NO_URL_RE = re.compile(
+    r"^\[(?P<status>[A-Z_]+)\]\s+(?P<branch>.+?)\s*$",
 )
 
 # Markdown entry line: - [branch](URL) Detail text
 _MD_ENTRY_RE = re.compile(
-    r"^\s*-\s+\[[^\]]+\]\((?P<url>https://github\.com/\S+)\)\s*(?P<detail>.*)$",
+    r"^\s*-\s+\[(?P<branch>[^\]]+)\]\((?P<url>https://github\.com/\S+)\)\s*(?P<detail>.*)$",
 )
 
 _CONVENTIONAL_TITLE_PREFIX_RE = re.compile(
@@ -117,16 +123,16 @@ _BACKPORT_SOURCE_PR_RE = re.compile(
     r"(?i)(?:backport|cherry[- ]pick)\b[^#\n]{0,60}#(\d+)"
 )
 
-_CONFIG_PATH = Path.home() / ".gh-rerunner.json"
-_PR_STATUS_CACHE_PATH = Path.home() / ".gh-rerunner-cache.json"
+_CONFIG_PATH = Path.home() / ".ghelper.json"
+_PR_STATUS_CACHE_PATH = Path.home() / ".ghelper-cache.json"
 _PR_STATUS_CACHE_TTL_SECONDS = 3600  # 1 hour
-_SESSION_PATH = Path.home() / ".gh-rerunner-sessions.json"
+_SESSION_PATH = Path.home() / ".ghelper-sessions.json"
 _MAX_SESSIONS = 20
 _GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
 _GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
 _DEFAULT_GITHUB_CLIENT_ID = "Ov23lio3O4l5m3CE589o"
-_DEFAULT_GITHUB_CLIENT_ID_ENV = "GH_RERUNNER_GITHUB_CLIENT_ID"
-_LEGACY_GITHUB_CLIENT_ID_ENV = "GH_RERUNNER_OAUTH_CLIENT_ID"
+_DEFAULT_GITHUB_CLIENT_ID_ENV = "GHELPER_GITHUB_CLIENT_ID"
+_LEGACY_GITHUB_CLIENT_ID_ENVS = ("GH_RERUNNER_GITHUB_CLIENT_ID", "GH_RERUNNER_OAUTH_CLIENT_ID")
 _DEFAULT_REPO_CONFIG = {
     "ignore_ci": [],
     "required_labels": [],
@@ -249,10 +255,16 @@ def _extract_line_url(url_part: str) -> Optional[str]:
     return m.group(0)
 
 
-def _append_entry(entries: list[SummaryEntry], seen: set[str], status: str, url: str) -> None:
+def _append_entry(
+    entries: list[SummaryEntry],
+    seen: set[str],
+    status: str,
+    url: str,
+    branch: str = "",
+) -> None:
     if url not in seen:
         seen.add(url)
-        entries.append(SummaryEntry(status, url))
+        entries.append(SummaryEntry(status, url, branch))
 
 
 def _load_user_config() -> dict[str, Any]:
@@ -282,7 +294,7 @@ def _save_user_config(data: dict[str, Any]) -> None:
 
 
 def _resolve_saved_token() -> Optional[str]:
-    """Pick the persisted token from ~/.gh-rerunner.json (saved by `auth`)."""
+    """Pick the persisted token from ~/.ghelper.json (saved by `auth`)."""
     cfg = _load_user_config()
     tok = cfg.get("token") if isinstance(cfg, dict) else None
     if isinstance(tok, str) and tok.strip():
@@ -303,7 +315,7 @@ def _token_option_callback(
         os.environ.setdefault("GITHUB_TOKEN", saved)
         return saved
     raise click.UsageError(
-        "No GitHub token available. Run `gh-rerunner auth` to set one up, "
+        "No GitHub token available. Run `ghelper auth` to set one up, "
         "or export GITHUB_TOKEN=<token>."
     )
 
@@ -530,19 +542,20 @@ def _pr_requirements_status(pr: Any, cfg: dict[str, Any]) -> tuple[bool, str]:
     return True, "ok"
 
 
-def _parse_structured_line(line: str) -> Optional[tuple[str, str]]:
+def _parse_structured_line(line: str) -> Optional[tuple[str, str, str]]:
+    """Parse a URL-bearing summary line into ``(status, url, branch)``."""
     legacy = _ENTRY_RE.match(line)
     if legacy:
         clean = _extract_line_url(legacy.group("url"))
         if clean:
-            return legacy.group("status"), clean
+            return legacy.group("status"), clean, legacy.group("branch").strip()
 
     markdown = _MD_ENTRY_RE.match(line)
     if markdown:
         clean = _extract_line_url(markdown.group("url"))
         if clean:
             status = _infer_status_from_markdown_detail(markdown.group("detail"))
-            return status, clean
+            return status, clean, markdown.group("branch").strip()
 
     return None
 
@@ -577,9 +590,60 @@ def _collect_structured_entries(text: str) -> list[SummaryEntry]:
         parsed = _parse_structured_line(line)
         if not parsed:
             continue
-        status, url = parsed
-        _append_entry(entries, seen, status, url)
+        status, url, branch = parsed
+        _append_entry(entries, seen, status, url, branch)
     return entries
+
+
+def _collect_missing_entries(text: str) -> list[SummaryEntry]:
+    """Status-prefixed lines that carry no PR URL, e.g. ``[MISSING] next/3.10.x.x``.
+
+    These represent branches that still need a backport (no PR to watch yet), so
+    they are surfaced separately rather than dropped or treated as watch targets.
+    """
+    missing: list[SummaryEntry] = []
+    seen: set[tuple[str, str]] = set()
+    for line in text.splitlines():
+        # Skip lines that already resolved to a watchable (URL-bearing) entry.
+        if _parse_structured_line(line):
+            continue
+        if _URL_RE.search(line):
+            continue
+        m = _ENTRY_NO_URL_RE.match(line)
+        if not m:
+            continue
+        branch = m.group("branch").strip()
+        if not branch:
+            continue
+        status = m.group("status").lower()
+        key = (status, branch)
+        if key in seen:
+            continue
+        seen.add(key)
+        missing.append(SummaryEntry(status, "", branch))
+    return missing
+
+
+def _extract_title(text: str) -> str:
+    """Capture a leading freeform title line (e.g. the source-PR title).
+
+    Returns the first non-empty content line that is not metadata, a structured
+    entry, or a bare URL — stripping any leading markdown heading marker. Returns
+    an empty string when the block starts straight into entries or URLs.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _is_metadata_line(line):
+            continue
+        # First content line decides it: a title only if it is freeform text.
+        if _ENTRY_NO_URL_RE.match(line) or _MD_ENTRY_RE.match(line):
+            return ""
+        if _URL_RE.search(line):
+            return ""
+        return re.sub(r"^#+\s*", "", stripped)
+    return ""
 
 
 def _format_markdown_summary(
@@ -592,7 +656,7 @@ def _format_markdown_summary(
     if metadata:
         meta.update(metadata)
     attrs = " ".join(f'{key}="{value}"' for key, value in meta.items())
-    lines.append(f"<!-- gh-rerunner: {attrs} -->")
+    lines.append(f"<!-- ghelper: {attrs} -->")
     lines.extend(f"- [{branch}]({url}) {detail}" for branch, url, detail in entries)
     return "\n".join(lines)
 
@@ -773,7 +837,7 @@ def _download_binary(url: str, token: str) -> bytes:
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
-            "User-Agent": "gh-rerunner",
+            "User-Agent": "ghelper",
         },
     )
     try:
@@ -878,26 +942,33 @@ def _extract_urls(text: str) -> list[str]:
 
 
 class SummaryEntry:
-    __slots__ = ("status", "url")
+    __slots__ = ("status", "url", "branch")
 
-    def __init__(self, status: str, url: str) -> None:
+    def __init__(self, status: str, url: str, branch: str = "") -> None:
         self.status = status.lower()
         self.url = url
+        self.branch = branch
 
 
 class ParsedSummary:
     """Result of parsing a backport-tracker copy-summary block."""
-    __slots__ = ("entries", "ignore_ci", "metadata")
+    __slots__ = ("entries", "ignore_ci", "metadata", "title", "missing")
 
     def __init__(
         self,
         entries: list[SummaryEntry],
         ignore_ci: list[str],
         metadata: dict[str, str],
+        title: str = "",
+        missing: Optional[list[SummaryEntry]] = None,
     ) -> None:
         self.entries = entries
         self.ignore_ci = ignore_ci
         self.metadata = metadata
+        # Freeform title line (e.g. the source-PR title), if present.
+        self.title = title
+        # Status-prefixed entries that carry no PR URL (e.g. [MISSING] rows).
+        self.missing = missing if missing is not None else []
 
 
 def _parse_summary(text: str) -> ParsedSummary:
@@ -908,8 +979,8 @@ def _parse_summary(text: str) -> ParsedSummary:
             - Legacy: ``[STATUS] branch: url``
             - Markdown: ``- [branch](url) Detail text``
         - Optional metadata from either format:
-            - ``# gh-rerunner: key=value``
-            - ``<!-- gh-rerunner: key="value" -->``
+            - ``# ghelper: key=value``
+            - ``<!-- ghelper: key="value" -->``
 
     For plain URL lists (no status prefix) each URL is returned with
     status='' so the caller treats them as unknown.
@@ -933,7 +1004,11 @@ def _parse_summary(text: str) -> ParsedSummary:
             entries.append(SummaryEntry("", url))
             seen_urls.add(url)
 
-    return ParsedSummary(entries, ignore_ci, metadata)
+    # --- Branches without a PR yet + leading title line ---
+    missing = _collect_missing_entries(text)
+    title = metadata.get("source_pr_title", "").strip() or _extract_title(text)
+
+    return ParsedSummary(entries, ignore_ci, metadata, title=title, missing=missing)
 
 
 def _all_failures_ignored(run: WorkflowRun, ignore_ci: list[str]) -> bool:
@@ -1008,6 +1083,16 @@ def _trigger_rerun(run: WorkflowRun) -> str:
     return "full"
 
 
+def _trigger_update_branch(pr: Any) -> str:
+    """Update a PR's branch with the latest changes from its base branch.
+
+    Mirrors GitHub's "Update branch" button: the update-branch endpoint merges
+    the base-branch HEAD into the PR branch. Returns the mode used.
+    """
+    pr.update_branch()
+    return "update_branch"
+
+
 def _exc_message(exc: GithubException) -> str:
     if isinstance(exc.data, dict):
         return exc.data.get("message", str(exc))
@@ -1023,13 +1108,13 @@ _FINE_GRAINED_BASE_URL = "https://github.com/settings/personal-access-tokens/new
 # Classic PAT — pre-selects the `repo` scope (which includes actions write)
 _CLASSIC_URL = (
     "https://github.com/settings/tokens/new"
-    "?scopes=repo&description=gh-rerunner"
+    "?scopes=repo&description=ghelper"
 )
 
 
 def _build_fine_grained_url(org: Optional[str] = None) -> str:
     """Build the fine-grained PAT creation URL, optionally scoped to an org."""
-    params: dict[str, str] = {"description": "gh-rerunner"}
+    params: dict[str, str] = {"description": "ghelper"}
     if org:
         # resource_owner pre-selects the org/user on the consent page so the
         # token can access repos that aren't owned by the authenticated user.
@@ -1039,9 +1124,14 @@ def _build_fine_grained_url(org: Optional[str] = None) -> str:
 
 def _device_flow_client_id() -> str:
     """Read the GitHub OAuth app client ID used for device authorization."""
-    client_id = os.environ.get(_DEFAULT_GITHUB_CLIENT_ID_ENV, "").strip() or _DEFAULT_GITHUB_CLIENT_ID
+    client_id = os.environ.get(_DEFAULT_GITHUB_CLIENT_ID_ENV, "").strip()
     if not client_id:
-        client_id = os.environ.get(_LEGACY_GITHUB_CLIENT_ID_ENV, "").strip()
+        for _legacy_env in _LEGACY_GITHUB_CLIENT_ID_ENVS:
+            client_id = os.environ.get(_legacy_env, "").strip()
+            if client_id:
+                break
+    if not client_id:
+        client_id = _DEFAULT_GITHUB_CLIENT_ID
     if not client_id:
         raise click.ClickException("Device flow requires a GitHub OAuth client ID.")
     return client_id
@@ -1053,7 +1143,7 @@ def _request_device_code(client_id: str) -> dict[str, Any]:
     request = urllib.request.Request(
         _GITHUB_DEVICE_CODE_URL,
         data=payload,
-        headers={"Accept": "application/json", "User-Agent": "gh-rerunner"},
+        headers={"Accept": "application/json", "User-Agent": "ghelper"},
         method="POST",
     )
     try:
@@ -1088,7 +1178,7 @@ def _poll_device_token(client_id: str, device_code: str, interval: int, expires_
         request = urllib.request.Request(
             _GITHUB_OAUTH_TOKEN_URL,
             data=payload,
-            headers={"Accept": "application/json", "User-Agent": "gh-rerunner"},
+            headers={"Accept": "application/json", "User-Agent": "ghelper"},
             method="POST",
         )
         try:
@@ -1111,7 +1201,7 @@ def _poll_device_token(client_id: str, device_code: str, interval: int, expires_
             current_interval += 5
             continue
         if error == "expired_token":
-            raise click.ClickException("The device authorization expired. Run `gh-rerunner auth` again.")
+            raise click.ClickException("The device authorization expired. Run `ghelper auth` again.")
         description = data.get("error_description") or (str(error) if error else "unknown error")
         raise click.ClickException(f"GitHub device flow failed: {description}")
     if last_network_error:
@@ -1130,7 +1220,7 @@ def _poll_device_token(client_id: str, device_code: str, interval: int, expires_
 def main() -> None:
     """Headless GitHub Actions auto-rerunner.\n
     \b
-    Run `gh-rerunner auth` to get a link for creating a token with the
+    Run `ghelper auth` to get a link for creating a token with the
     minimum required permissions.
     """
 
@@ -1170,7 +1260,7 @@ def auth_cmd(use_device: bool, classic: bool, org: Optional[str], no_browser: bo
       1. uses GitHub's device authorization flow by default, or opens the
          PAT consent page when --pat is selected;
       2. validates the resulting token against the GitHub API;
-        3. saves it to ~/.gh-rerunner.json (chmod 600) so future `gh-rerunner
+        3. saves it to ~/.ghelper.json (chmod 600) so future `ghelper
          watch / ls / logs` invocations pick it up without --token /
          GITHUB_TOKEN.
 
@@ -1180,7 +1270,7 @@ def auth_cmd(use_device: bool, classic: bool, org: Optional[str], no_browser: bo
       owner, which means they cannot access repos owned by an org.  Pass
       --org ORG with --pat to pre-select the org on the consent page:
 
-        gh-rerunner auth --org my-company
+        ghelper auth --org my-company
     """
     if use_device and (classic or org):
         raise click.UsageError("--classic and --org are PAT-only options; add --pat to use them.")
@@ -1207,7 +1297,7 @@ def auth_cmd(use_device: bool, classic: bool, org: Optional[str], no_browser: bo
             )
         )
 
-    click.echo("\n── gh-rerunner sign-in ──────────────────────────────────────")
+    click.echo("\n── ghelper sign-in ──────────────────────────────────────")
     click.echo(f"Opening GitHub consent page ({scope_help}):")
     click.echo(f"  {url}")
 
@@ -1269,7 +1359,7 @@ def auth_cmd(use_device: bool, classic: bool, org: Optional[str], no_browser: bo
 
     click.echo(f"\n✓ Authenticated as {login}.")
     click.echo(f"  Token saved to {_CONFIG_PATH} (chmod 600).")
-    click.echo("  Subsequent `gh-rerunner` commands pick it up automatically.")
+    click.echo("  Subsequent `ghelper` commands pick it up automatically.")
     click.echo("  To export it into your shell as well, run:")
     click.echo(f"    export GITHUB_TOKEN={token[:6]}…")
     click.echo()
@@ -1281,7 +1371,7 @@ def auth_cmd(use_device: bool, classic: bool, org: Optional[str], no_browser: bo
 
 @main.group("config")
 def config_group() -> None:
-    """Manage persistent per-repo defaults stored in ~/.gh-rerunner.json."""
+    """Manage persistent per-repo defaults stored in ~/.ghelper.json."""
 
 
 @config_group.command("show")
@@ -1412,7 +1502,7 @@ def assigned_prs_cmd(
     click.echo(f"Found {len(entries)} assigned PR(s)", err=True)
     if not entries:
         click.echo(f"# {title}")
-        click.echo(f"<!-- gh-rerunner: format=\"2\" source=\"assigned-prs\" assignee=\"{g.get_user().login}\" -->")
+        click.echo(f"<!-- ghelper: format=\"2\" source=\"assigned-prs\" assignee=\"{g.get_user().login}\" -->")
         click.echo("No assigned PRs found.")
         return
     click.echo(f"Exporting to markdown...", err=True)
@@ -1544,19 +1634,19 @@ def run_cmd(
 
     \b
     Markdown summaries on stdin are accepted too — e.g. backport-tracker output:
-      <!-- gh-rerunner: ignore_ci="lint,build" -->
+      <!-- ghelper: ignore_ci="lint,build" -->
       - [release-1.2](https://github.com/owner/repo/pull/456) CI failed
       - [release-1.3](https://github.com/owner/repo/pull/457) Merged
 
     \b
     Quick-start:
-      gh-rerunner watch https://github.com/owner/repo/actions/runs/12345
-      gh-rerunner watch -R owner/repo 12345 -n 5
-      pbpaste | gh-rerunner watch
-      cat summary.txt | gh-rerunner watch -n 5 -i 60
-      gh-rerunner watch -a                (watch all assigned PRs)
-      gh-rerunner watch #last             (resume most recent session)
-      gh-rerunner watch --serve --no-tui  (headless server + web UI)
+      ghelper watch https://github.com/owner/repo/actions/runs/12345
+      ghelper watch -R owner/repo 12345 -n 5
+      pbpaste | ghelper watch
+      cat summary.txt | ghelper watch -n 5 -i 60
+      ghelper watch -a                (watch all assigned PRs)
+      ghelper watch #last             (resume most recent session)
+      ghelper watch --serve --no-tui  (headless server + web UI)
     """
     g: Optional[Github] = Github(token) if token else None
     user_cfg = _load_user_config()
@@ -1592,7 +1682,7 @@ def run_cmd(
         if g is None:
             raise click.UsageError(
                 "No GitHub token available. --assigned requires authentication. "
-                "Run `gh-rerunner auth` or export GITHUB_TOKEN=<token>."
+                "Run `ghelper auth` or export GITHUB_TOKEN=<token>."
             )
         click.echo("Collecting assigned PRs for run shortcut...", err=True)
         try:
@@ -1628,9 +1718,19 @@ def run_cmd(
     # Save this as a new session (unless we are already resuming one)
     if not session_resume and combined.strip():
         session_idx = _save_session(combined, {})
-        click.echo(f"  Session #{session_idx} saved — resume with: gh-rerunner watch #{session_idx}", err=True)
+        click.echo(f"  Session #{session_idx} saved — resume with: ghelper watch #{session_idx}", err=True)
 
     parsed = _parse_summary(combined)
+
+    if parsed.title:
+        click.echo(f"  {parsed.title}", err=True)
+    if parsed.missing:
+        click.echo(
+            f"  {len(parsed.missing)} branch(es) without a backport PR yet:",
+            err=True,
+        )
+        for entry in parsed.missing:
+            click.echo(f"    [{entry.status.upper()}] {entry.branch}", err=True)
 
     # Merge ignore_ci from CLI option + summary header
     cli_ignore = [j.strip() for j in ignore_ci if j.strip()]
@@ -1665,7 +1765,7 @@ def run_cmd(
     if active_entries and g is None:
         raise click.UsageError(
             "No GitHub token available. Resolving targets requires authentication. "
-            "Run `gh-rerunner auth`, export GITHUB_TOKEN=<token>, or start with --serve and log in from /auth."
+            "Run `ghelper auth`, export GITHUB_TOKEN=<token>, or start with --serve and log in from /auth."
         )
 
     # -----------------------------------------------------------------------
@@ -1784,7 +1884,7 @@ def run_cmd(
     # The CLI's TUI observes and dispatches; retries happen server-side.
     # -----------------------------------------------------------------------
     import threading as _threading
-    from gh_rerunner.server import JSONRPCServer, create_app
+    from ghelper.server import JSONRPCServer, create_app
     from aiohttp import web as _aiohttp_web
 
     _rpc_server = JSONRPCServer(token=token)
@@ -1835,7 +1935,7 @@ def run_cmd(
 
     _server_thread = _threading.Thread(
         target=_server_thread_main,
-        name="gh-rerunner-server",
+        name="ghelper-server",
         daemon=True,
     )
     _server_thread.start()
@@ -2000,7 +2100,7 @@ def run_cmd(
             if ui_state.get("modal") is modal:
                 ui_state["modal"] = None
 
-        t = _threading.Thread(target=_run, name="gh-rerunner-device-login", daemon=True)
+        t = _threading.Thread(target=_run, name="ghelper-device-login", daemon=True)
         t.start()
 
     def _event(msg: str) -> None:
@@ -2405,7 +2505,7 @@ def run_cmd(
 
         Buffer grammar (any of):
           * one or more PR URLs (separated by whitespace, commas, or newlines)
-          * a Backport-Tracker / `gh-rerunner ls` markdown summary
+          * a Backport-Tracker / `ghelper ls` markdown summary
           * `#last` or `#N` to expand a saved session
           * `:assigned [REGEX]` to pull PRs assigned to the current user
         """
@@ -2486,6 +2586,24 @@ def run_cmd(
                 if key == "escape":
                     ui_state["modal"] = None
             return True
+        # Confirm-update-branch modal: y confirms the action, n/Esc cancels.
+        if modal.get("kind") == "confirm_update_branch":
+            for key in keys:
+                if key in {"y", "Y"}:
+                    tid = int(modal.get("tracker_id") or 0)
+                    label = str(modal.get("label", ""))
+                    ui_state["modal"] = None
+                    if tid:
+                        result = _rpc_server.update_branch_tracker_sync(tid)
+                        if result.get("ok"):
+                            _event(f"update branch requested for {label}")
+                        else:
+                            _event(f"update branch failed for {label}: {result.get('error', 'error')}")
+                    return True
+                if key in {"n", "N", "escape"}:
+                    ui_state["modal"] = None
+                    return True
+            return True
         changed = False
         submit = False
         for key in keys:
@@ -2536,6 +2654,24 @@ def run_cmd(
                     tid = int(target_state.get(primary, {}).get("tracker_id") or 0)
                     if tid and _rpc_server.remove_tracker_sync(tid):
                         _event(f"removed tracker {primary}")
+                changed = True
+                continue
+
+            if key == "b" and ui_state["focus"] == "targets":
+                rows = _target_row_items()
+                if rows:
+                    idx = max(0, min(ui_state["selected_targets"], len(rows) - 1))
+                    _, primary, _ = rows[idx]
+                    tid = int(target_state.get(primary, {}).get("tracker_id") or 0)
+                    if tid:
+                        # Mutating action — gate behind a confirm modal rather
+                        # than acting on the bare keystroke.
+                        ui_state["modal"] = {
+                            "kind": "confirm_update_branch",
+                            "tracker_id": tid,
+                            "label": primary,
+                            "error": "",
+                        }
                 changed = True
                 continue
 
@@ -2670,7 +2806,7 @@ def run_cmd(
 
     def _render_dashboard() -> None:
         click.clear()
-        click.echo("gh-rerunner live dashboard")
+        click.echo("ghelper live dashboard")
         click.echo(
             f"Targets={len(target_state)} | Runs={len(state)} | "
             f"max-retries={max_retries} | interval={interval}s"
@@ -2875,7 +3011,7 @@ def run_cmd(
             space_hint = "space expand"
         help_text = (
             f"[{focus_name} {scroll} · {status}] TAB pane · j/k row · ←/→ page · {space_hint} · "
-            f"a add · i login · w device-login · d remove · r refresh · l toggle logs · o/Enter open · Ctrl-C exit"
+            f"a add · i login · w device-login · b update-branch · d remove · r refresh · l toggle logs · o/Enter open · Ctrl-C exit"
         )
         footer_border = "blue" if status == "running" else (
             "green" if all(s["result"] == "success" for s in state.values()) else "red"
@@ -2929,6 +3065,15 @@ def run_cmd(
             else:
                 modal_body = "…"
             modal_panel = _RichPanel(modal_body, title="Device Login", border_style="magenta")
+        elif modal and modal.get("kind") == "confirm_update_branch":
+            label = str(modal.get("label", ""))
+            modal_body = (
+                "Update branch for:\n\n"
+                f"  [bold]{label}[/bold]\n\n"
+                "This updates the PR branch with its base branch on GitHub.\n"
+                "[bold]y[/bold] confirm · [bold]n[/bold]/Esc cancel"
+            )
+            modal_panel = _RichPanel(modal_body, title="Confirm update branch", border_style="yellow")
         else:
             modal_panel = None
 
@@ -3364,4 +3509,4 @@ def failed_logs_cmd(
         click.echo("No failed jobs found in the requested targets.")
 
 
-# Headless HTTP server is exposed via `gh-rerunner watch --serve --no-tui`.
+# Headless HTTP server is exposed via `ghelper watch --serve --no-tui`.

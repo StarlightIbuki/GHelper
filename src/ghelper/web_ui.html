@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>gh-rerunner | PR Operations</title>
+    <title>ghelper | PR Operations</title>
     <style>
         :root {
             --bg: #f3f4f6;
@@ -346,7 +346,7 @@
                 <h3 style="margin:0;">Sign in</h3>
                 <button id="authCloseBtn" class="secondary">Close</button>
             </div>
-            <iframe id="authFrame" class="auth-frame" title="Sign in to gh-rerunner" src="about:blank"></iframe>
+            <iframe id="authFrame" class="auth-frame" title="Sign in to ghelper" src="about:blank"></iframe>
         </div>
     </div>
 
@@ -486,7 +486,7 @@
         window.addEventListener('message', async (event) => {
             if (event.origin !== window.location.origin) return;
             const data = event.data || {};
-            if (data.type === 'gh-rerunner-auth-success') {
+            if (data.type === 'ghelper-auth-success') {
                 closeAuthModal();
                 await refreshAuthStatus();
                 // forward to add-targets iframe in case it triggered the login
@@ -495,15 +495,15 @@
                 }
                 return;
             }
-            if (data.type === 'gh-rerunner-open-auth') {
+            if (data.type === 'ghelper-open-auth') {
                 openAuthModal();
                 return;
             }
-            if (data.type === 'gh-rerunner-add-targets-close') {
+            if (data.type === 'ghelper-add-targets-close') {
                 closeAddTargetsModal();
                 return;
             }
-            if (data.type === 'gh-rerunner-trackers-updated') {
+            if (data.type === 'ghelper-trackers-updated') {
                 await refreshTrackersView();
             }
         });

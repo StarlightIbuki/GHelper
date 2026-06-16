@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from gh_rerunner.server import JSONRPCServer, _normalize_target_url
+from ghelper.server import JSONRPCServer, _normalize_target_url
 
 
 def _write_json(path: Path, data: object) -> None:

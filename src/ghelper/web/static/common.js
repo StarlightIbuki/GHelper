@@ -1,4 +1,4 @@
-/* gh-rerunner — shared JS utilities */
+/* ghelper — shared JS utilities */
 
 function escapeHtml(v) {
     return String(v || '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));

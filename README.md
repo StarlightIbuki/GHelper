@@ -1,8 +1,8 @@
-# gh-rerunner
+# ghelper
 
 A headless Python CLI that polls GitHub Actions workflow runs and automatically re-runs failed jobs — designed to keep running on a server even when your laptop is off.
 
-Pairs naturally with the **Backport Tracker** userscript: pipe its copy-summary output directly into `gh-rerunner watch` for a fast workflow.
+Pairs naturally with the **Backport Tracker** userscript: pipe its copy-summary output directly into `ghelper watch` for a fast workflow.
 
 ## Requirements
 
@@ -15,7 +15,7 @@ Pairs naturally with the **Backport Tracker** userscript: pipe its copy-summary 
 pip install -e .
 ```
 
-This installs the `gh-rerunner` command.
+This installs the `ghelper` command.
 
 ## Authentication
 
@@ -24,7 +24,7 @@ You need a GitHub token with permission to read and trigger workflow reruns.
 The default sign-in flow uses GitHub's device authorization flow:
 
 ```
-gh-rerunner auth
+ghelper auth
 ```
 
 prints a browser URL and short code, then polls GitHub until you approve the
@@ -35,7 +35,7 @@ token-based flow.
 
 ### Device flow
 
-1. Run `gh-rerunner auth`.
+1. Run `ghelper auth`.
 2. Open the URL printed by the command if your browser does not open automatically.
 3. Enter the short code shown in the terminal.
 4. Approve the login in GitHub.
@@ -45,18 +45,18 @@ including org-owned repos.
 
 ### PAT mode
 
-Use `gh-rerunner auth --pat` if you want to keep using a PAT.
+Use `ghelper auth --pat` if you want to keep using a PAT.
 
 Fine-grained PATs:
 
-1. Follow the link printed by `gh-rerunner auth --pat`.
+1. Follow the link printed by `ghelper auth --pat`.
 2. Select the target repository.
 3. Under **Repository permissions → Actions**, choose **Read and write**.
 4. No other permissions are needed.
 
 Classic PATs:
 
-1. Follow the classic link printed by `gh-rerunner auth --pat --classic`.
+1. Follow the classic link printed by `ghelper auth --pat --classic`.
 2. The `repo` scope will be pre-selected — that is sufficient.
 
 > The `repo` scope grants write access to all repository resources, not just
@@ -72,11 +72,11 @@ For device flow, the GitHub OAuth client ID is built in. You only need to set
 the client secret for the `/auth?code=...` OAuth exchange path:
 
 ```bash
-export GH_RERUNNER_GITHUB_CLIENT_SECRET=your_client_secret_here
+export GHELPER_GITHUB_CLIENT_SECRET=your_client_secret_here
 ```
 
 You can still override the embedded client ID by setting
-`GH_RERUNNER_GITHUB_CLIENT_ID` if needed.
+`GHELPER_GITHUB_CLIENT_ID` if needed.
 
 ---
 
@@ -84,20 +84,20 @@ You can still override the embedded client ID by setting
 
 | Command | What it does |
 |---|---|
-| `gh-rerunner auth` | Start device flow by default; `--pat` keeps PAT mode |
-| `gh-rerunner watch [TARGETS]...` | Supervisor: TUI + auto-rerun + optional HTTP server |
-| `gh-rerunner ls` | List assigned PRs as Backport-Tracker-compatible markdown |
-| `gh-rerunner logs [TARGETS]...` | Print failed-job logs (`--grep` to filter) |
-| `gh-rerunner config show \| set \| clear` | Manage per-repo defaults at `~/.gh-rerunner.json` |
+| `ghelper auth` | Start device flow by default; `--pat` keeps PAT mode |
+| `ghelper watch [TARGETS]...` | Supervisor: TUI + auto-rerun + optional HTTP server |
+| `ghelper ls` | List assigned PRs as Backport-Tracker-compatible markdown |
+| `ghelper logs [TARGETS]...` | Print failed-job logs (`--grep` to filter) |
+| `ghelper config show \| set \| clear` | Manage per-repo defaults at `~/.ghelper.json` |
 
 `watch` is the canonical supervisor. The TUI is just an interface for an embedded server — the same tracker model is exposed over HTTP/JSON-RPC and the web UI when `--serve` is set, and you can drive it headlessly with `--serve --no-tui`.
 
 ---
 
-## `gh-rerunner watch`
+## `ghelper watch`
 
 ```
-gh-rerunner watch [OPTIONS] [TARGETS]...
+ghelper watch [OPTIONS] [TARGETS]...
 ```
 
 TARGETS can be any mix of:
@@ -109,7 +109,7 @@ TARGETS can be any mix of:
 | Bare run ID | `12345` (requires `-R owner/repo`) |
 | Session ref | `#last`, `#3` — resume a previous invocation |
 
-You can also pipe markdown summaries (e.g. from `gh-rerunner ls` or Backport Tracker) on stdin. Targets can be added live from the TUI with `a`, or via the web UI / JSON-RPC when `--serve` is set.
+You can also pipe markdown summaries (e.g. from `ghelper ls` or Backport Tracker) on stdin. Targets can be added live from the TUI with `a`, or via the web UI / JSON-RPC when `--serve` is set.
 
 **Options:**
 
@@ -132,8 +132,8 @@ You can also pipe markdown summaries (e.g. from `gh-rerunner ls` or Backport Tra
 
 The embedded server also exposes `GET /auth`. Pass `?code=...` to exchange an
 OAuth code for a token, or `?token=...` to set a PAT directly. The OAuth code
-exchange requires `GH_RERUNNER_GITHUB_CLIENT_ID` and
-`GH_RERUNNER_GITHUB_CLIENT_SECRET` (or the legacy `GH_RERUNNER_OAUTH_*`
+exchange requires `GHELPER_GITHUB_CLIENT_ID` and
+`GHELPER_GITHUB_CLIENT_SECRET` (or the legacy `GH_RERUNNER_*`
 names).
 
 ### TUI shortcuts (in `watch`)
@@ -155,19 +155,19 @@ names).
 ### Headless / server mode
 
 ```bash
-gh-rerunner watch --serve --no-tui
+ghelper watch --serve --no-tui
 ```
 
-starts the JSON-RPC server (`/rpc`) and web UI on `127.0.0.1:9999`. Trackers added via the web UI or RPC are persisted to `~/.gh-rerunner-trackers.json` and reload across restarts.
+starts the JSON-RPC server (`/rpc`) and web UI on `127.0.0.1:9999`. Trackers added via the web UI or RPC are persisted to `~/.ghelper-trackers.json` and reload across restarts.
 
 ---
 
-## `gh-rerunner ls`
+## `ghelper ls`
 
 Export PRs assigned to the authenticated user, in the same markdown format Backport Tracker emits. Useful as input to `watch`.
 
 ```
-gh-rerunner ls
+ghelper ls
 ```
 
 **Options:**
@@ -182,12 +182,12 @@ gh-rerunner ls
 
 ---
 
-## `gh-rerunner logs`
+## `ghelper logs`
 
 Print failed workflow jobs and their logs. `--grep` keeps only matching lines plus adjacent context, with matched text highlighted.
 
 ```
-gh-rerunner logs --grep 'AssertionError|Traceback' --context 3 \
+ghelper logs --grep 'AssertionError|Traceback' --context 3 \
   https://github.com/owner/repo/actions/runs/12345
 ```
 
@@ -204,15 +204,15 @@ You can pipe summary text containing GitHub URLs instead of listing TARGETS.
 
 ---
 
-## `gh-rerunner config`
+## `ghelper config`
 
-Persistent per-repo defaults at `~/.gh-rerunner.json`.
+Persistent per-repo defaults at `~/.ghelper.json`.
 
 ```bash
-gh-rerunner config show
-gh-rerunner config show -R owner/repo
-gh-rerunner config set -R owner/repo --ignore lint --ignore build-docs --required-label release-ready --required-reviews 1
-gh-rerunner config clear -R owner/repo
+ghelper config show
+ghelper config show -R owner/repo
+ghelper config set -R owner/repo --ignore lint --ignore build-docs --required-label release-ready --required-reviews 1
+ghelper config clear -R owner/repo
 ```
 
 Saved fields per repo:
@@ -227,41 +227,41 @@ Saved fields per repo:
 
 ```bash
 # Export assigned PRs in backport-tracker format
-gh-rerunner ls
+ghelper ls
 
 # Pipe to watch
-gh-rerunner ls | gh-rerunner watch -n 5
+ghelper ls | ghelper watch -n 5
 
 # Watch a single Actions run
-gh-rerunner watch https://github.com/owner/repo/actions/runs/12345
+ghelper watch https://github.com/owner/repo/actions/runs/12345
 
 # Watch all runs for a PR
-gh-rerunner watch https://github.com/owner/repo/pull/456
+ghelper watch https://github.com/owner/repo/pull/456
 
 # Bare run ID — requires -R
-gh-rerunner watch -R owner/repo 12345
+ghelper watch -R owner/repo 12345
 
 # Up to 5 retries, check every minute
-gh-rerunner watch -n 5 -i 60 https://github.com/owner/repo/pull/456
+ghelper watch -n 5 -i 60 https://github.com/owner/repo/pull/456
 
 # Ignore two CI jobs
-gh-rerunner watch --ignore lint --ignore docs https://github.com/owner/repo/pull/456
+ghelper watch --ignore lint --ignore docs https://github.com/owner/repo/pull/456
 
 # Watch all assigned PRs
-gh-rerunner watch -a
+ghelper watch -a
 
 # Resume the previous session
-gh-rerunner watch #last
+ghelper watch #last
 
 # Pipe backport-tracker "Copy summary" output
-pbpaste | gh-rerunner watch
+pbpaste | ghelper watch
 
 # Inspect failed logs
-gh-rerunner logs --grep 'AssertionError|Traceback' --context 3 \
+ghelper logs --grep 'AssertionError|Traceback' --context 3 \
   https://github.com/owner/repo/pull/456
 
 # Headless server mode (no TUI, web UI on localhost:9999)
-gh-rerunner watch --serve --no-tui
+ghelper watch --serve --no-tui
 ```
 
 ### Backport Tracker integration
@@ -269,10 +269,26 @@ gh-rerunner watch --serve --no-tui
 In the Backport Tracker sidebar panel, click **Copy summary**, then:
 
 ```bash
-pbpaste | gh-rerunner watch -n 3
+pbpaste | ghelper watch -n 3
 ```
 
-`gh-rerunner watch` extracts all GitHub URLs from the markdown automatically and reads any `ignore_ci="..."` directive embedded in the comment header.
+`ghelper watch` extracts all GitHub URLs from the markdown automatically and reads any `ignore_ci="..."` directive embedded in the comment header.
+
+A pasted summary may also include a leading title line and status rows that have
+no PR link yet, e.g.:
+
+```
+fix(plugins): oidc compliance of redirect_uri in different grant_types
+[MISSING] next/3.10.x.x
+[MISSING] next/3.11.x.x
+[MERGED] next/3.14.x.x: https://github.com/Kong/kong-ee/pull/18741
+[MERGED] ai-master: https://github.com/Kong/kong-ee/pull/18745
+```
+
+The title line is captured for display, rows with a PR URL become watch targets,
+and `[MISSING]`-style rows (branches without a backport PR yet) are surfaced as
+"nothing to track" instead of being treated as targets. The same parsing applies
+in the web UI's **Add Targets** import box.
 
 ---
 
@@ -284,8 +300,8 @@ pip install -e /path/to/gh-helper
 export GITHUB_TOKEN=ghp_...
 
 # Headless: HTTP server + tracker engine, no TUI
-nohup gh-rerunner watch --serve --no-tui --host 0.0.0.0 --port 9999 \
-  >> ~/rerunner.log 2>&1 &
+nohup ghelper watch --serve --no-tui --host 0.0.0.0 --port 9999 \
+  >> ~/ghelper.log 2>&1 &
 ```
 
-Trackers persist in `~/.gh-rerunner-trackers.json`, so the server can be restarted without losing state. Connect to the web UI at `http://<host>:9999/` or drive it via `POST /rpc`.
+Trackers persist in `~/.ghelper-trackers.json`, so the server can be restarted without losing state. Connect to the web UI at `http://<host>:9999/` or drive it via `POST /rpc`.

@@ -3,21 +3,45 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>gh-rerunner | Add Targets</title>
-  <link rel="stylesheet" href="/static/common.css" />
+  <title>ghelper | Add Targets</title>
   <style>
-    /* Page-specific variable overrides */
-    :root { --bg: #ffffff; }
+    :root {
+        --bg: #ffffff;
+        --panel: #ffffff;
+        --text: #1f2328;
+        --muted: #656d76;
+        --accent: #2da44e;
+        --accent-hover: #2c974b;
+        --primary: #0969da;
+        --ok: #1a7f37;
+        --err: #cf222e;
+        --line: #d0d7de;
+        --shadow-sm: 0 1px 3px rgba(31,35,40,0.12);
+        --radius: 8px;
+    }
 
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
     .shell {
-      height: 100vh;
+      min-height: 100vh;
       padding: 20px;
       display: flex;
       flex-direction: column;
       gap: 16px;
-      overflow: hidden;
     }
     .header { display: none; }
+    .header h2 {
+      margin: 0;
+      font-size: 16px;
+      display: none; /* hidden since the wizard header handles it */
+    }
     .main {
       display: flex;
       flex-direction: column;
@@ -26,18 +50,67 @@
       flex: 1;
     }
 
-    /* Center button content on this page */
-    button { justify-content: center; }
+    button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        border-radius: 6px;
+        cursor: pointer;
+        border: 1px solid rgba(31,35,40,0.15);
+        transition: all 0.2s ease;
+        background: #f6f8fa;
+        color: var(--text);
+    }
+    button:hover { background: #f3f4f6; border-color: #8c959f; }
+    button.primary {
+        background: var(--accent);
+        color: #fff;
+        border: 1px solid transparent;
+    }
+    button.primary:hover { background: var(--accent-hover); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
-    #closeBtn { display: none; }
+    #closeBtn { display: none; } /* hidden since parent wizard handles it */
 
+    .import-panel {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+    }
+    .import-panel textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 13px;
+      resize: vertical;
+      background: #fff;
+      color: var(--text);
+      transition: border-color 0.2s;
+    }
+    .import-panel textarea:focus { outline: none; border-color: var(--primary); }
+    .import-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 190px;
+    }
     .import-settings {
       display: flex;
       align-items: center;
       gap: 12px;
       flex-wrap: wrap;
     }
-    .import-setting-item { display: inline-flex; align-items: center; gap: 6px; }
+    .import-setting-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
     .import-settings label {
       font-size: 11px;
       font-weight: 600;
@@ -79,9 +152,68 @@
       color: var(--muted);
     }
 
-    /* Override backdrop padding/z-index for the embedded auth modal */
-    .auth-backdrop { padding: 30px 12px; z-index: 200; backdrop-filter: blur(2px); }
-    .auth-frame { height: 100%; }
+    .auth-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(31, 35, 40, 0.5);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 30px 12px;
+      z-index: 200;
+      backdrop-filter: blur(2px);
+    }
+    .auth-window {
+      width: 100%;
+      max-width: 560px;
+      height: min(84vh, 860px);
+      background: #fff;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 18px 45px rgba(0,0,0,0.22);
+      display: flex;
+      flex-direction: column;
+    }
+    .auth-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .auth-frame {
+      border: 0;
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      display: block;
+    }
+
+
+
+    .loading {
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #edf2f8 25%, #dce6f2 50%, #edf2f8 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s linear infinite;
+      margin-bottom: 10px;
+    }
+    .loading-row {
+      height: 42px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      background: linear-gradient(90deg, #f4f7fa 25%, #eaf0f6 50%, #f4f7fa 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s linear infinite;
+    }
+    @keyframes shimmer {
+      from { background-position: 200% 0; }
+      to { background-position: -200% 0; }
+    }
 
     .toolbar {
       display: flex;
@@ -133,8 +265,17 @@
       font-weight: 600;
       color: var(--text);
     }
-    .group-meta { margin-top: 4px; font-size: 12px; color: var(--muted); }
-    .group-caret { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: nowrap; }
+    .group-meta {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .group-caret {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+      white-space: nowrap;
+    }
 
     .pr-row {
       display: grid;
@@ -145,7 +286,12 @@
       align-items: start;
     }
     .pr-row > div { min-width: 0; }
-    .pr-title { font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.3; }
+    .pr-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.3;
+    }
     .pr-url {
       margin-top: 3px;
       font-size: 12px;
@@ -153,7 +299,11 @@
       word-break: break-all;
       font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
     }
-    .pr-detail { margin-top: 4px; font-size: 12px; color: var(--muted); }
+    .pr-detail {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
 
     .footer {
       display: flex;
@@ -208,7 +358,6 @@
     </div>
   </div>
 
-  <script src="/static/common.js"></script>
   <script>
 
     const listBodyEl = document.getElementById('listBody');
@@ -233,6 +382,19 @@
       login: '',
     };
 
+    function escapeHtml(v) {
+      return String(v || '').replace(/[&<>"']/g, (m) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[m]));
+    }
+
+    function normalizeUrl(url) {
+      return String(url || '').trim().replace(/[?#].*$/, '').replace(/\/$/, '');
+    }
+
+    function extractRepoFromUrl(url) {
+      const m = String(url || '').trim().match(/^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+\/?$/i);
+      return m ? m[1] : '';
+    }
+
     function setStatus(text, isError) {
       statusEl.className = 'footer-status' + (isError ? ' err' : '');
       statusEl.textContent = text || '';
@@ -251,7 +413,7 @@
             <span>Sign in</span>
             <button id="authModalClose">Close</button>
           </div>
-          <iframe id="authFrame" class="auth-frame" title="Sign in to gh-rerunner" src="about:blank"></iframe>
+          <iframe id="authFrame" class="auth-frame" title="Sign in to ghelper" src="about:blank"></iframe>
         </div>
       `;
       document.body.appendChild(backdrop);
@@ -330,7 +492,7 @@
       text.split(/\r?\n/).forEach((line) => {
         const raw = String(line || '');
         if (!raw.trim()) return;
-        if (/^\s*#\s*gh-rerunner:/i.test(raw) || /^\s*<!--\s*gh-rerunner:/i.test(raw)) return;
+        if (/^\s*#\s*ghelper:/i.test(raw) || /^\s*<!--\s*ghelper:/i.test(raw)) return;
 
         const md = raw.match(mdEntryRe);
         if (md && md.groups && md.groups.url) {
@@ -629,7 +791,7 @@
       await renderState();
 
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ type: 'gh-rerunner-trackers-updated', added: urls.length }, '*');
+        window.parent.postMessage({ type: 'ghelper-trackers-updated', added: urls.length }, '*');
       }
     }
 
@@ -648,7 +810,7 @@
 
     function closeEmbedded() {
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ type: 'gh-rerunner-add-targets-close' }, '*');
+        window.parent.postMessage({ type: 'ghelper-add-targets-close' }, '*');
       }
     }
 
@@ -659,7 +821,7 @@
 
     window.addEventListener('message', (event) => {
       const data = event.data || {};
-      if (data.type === 'gh-rerunner-auth-success') {
+      if (data.type === 'ghelper-auth-success') {
         closeAuthModal();
         void refreshAuthStatus().then(() => {
           if (state._pendingLoadAssigned) {
@@ -668,11 +830,11 @@
           }
         });
       }
-      if (data.type === 'gh-rerunner-import-text' && typeof data.text === 'string') {
+      if (data.type === 'ghelper-import-text' && typeof data.text === 'string') {
         importTextEl.value = data.text;
         importFromText();
       }
-      if (data.type === 'gh-rerunner-load-assigned') {
+      if (data.type === 'ghelper-load-assigned') {
         void loadAssigned(true);
       }
     });

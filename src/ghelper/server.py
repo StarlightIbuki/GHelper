@@ -1,5 +1,5 @@
 """
-JSON-RPC 2.0 server for gh-rerunner.
+JSON-RPC 2.0 server for ghelper.
 Allows JS scripts to push status updates and query cached data.
 """
 
@@ -24,7 +24,7 @@ from aiohttp import web
 import click
 from github import Github
 
-from gh_rerunner.cli import (
+from ghelper.cli import (
     _collect_assigned_pr_entries,
     _collect_failed_jobs,
     _collect_structured_entries,
@@ -35,6 +35,7 @@ from gh_rerunner.cli import (
     _request_device_code as _cli_request_device_code,
     _poll_device_token as _cli_poll_device_token,
     _trigger_rerun,
+    _trigger_update_branch,
     _URL_RE,
     _RETRY_CONCLUSIONS,
     _DONE_CONCLUSIONS,
@@ -113,8 +114,8 @@ def _normalize_target_url(target: str) -> str:
 
 _GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
 _DEFAULT_GITHUB_CLIENT_ID = "Ov23lio3O4l5m3CE589o"
-_GITHUB_CLIENT_ID_ENV_NAMES = ("GH_RERUNNER_GITHUB_CLIENT_ID", "GH_RERUNNER_OAUTH_CLIENT_ID")
-_GITHUB_CLIENT_SECRET_ENV_NAMES = ("GH_RERUNNER_GITHUB_CLIENT_SECRET", "GH_RERUNNER_OAUTH_CLIENT_SECRET")
+_GITHUB_CLIENT_ID_ENV_NAMES = ("GHELPER_GITHUB_CLIENT_ID", "GH_RERUNNER_GITHUB_CLIENT_ID", "GH_RERUNNER_OAUTH_CLIENT_ID")
+_GITHUB_CLIENT_SECRET_ENV_NAMES = ("GHELPER_GITHUB_CLIENT_SECRET", "GH_RERUNNER_GITHUB_CLIENT_SECRET", "GH_RERUNNER_OAUTH_CLIENT_SECRET")
 
 
 def _normalize_backport_target(value: Any) -> str:
@@ -147,7 +148,7 @@ def _oauth_client_config() -> tuple[str, str]:
             break
     if not client_secret:
         raise click.ClickException(
-            "OAuth auth requires GH_RERUNNER_GITHUB_CLIENT_SECRET (or the legacy GH_RERUNNER_OAUTH_* names)."
+            "OAuth auth requires GHELPER_GITHUB_CLIENT_SECRET (or the legacy GH_RERUNNER_* names)."
         )
     return client_id, client_secret
 
@@ -164,7 +165,7 @@ def _exchange_oauth_code(code: str) -> str:
     request = urllib.request.Request(
         _GITHUB_OAUTH_TOKEN_URL,
         data=payload,
-        headers={"Accept": "application/json", "User-Agent": "gh-rerunner"},
+        headers={"Accept": "application/json", "User-Agent": "ghelper"},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=20) as response:
@@ -192,7 +193,7 @@ def _apply_token(server: "JSONRPCServer", token: str) -> str:
     server.user_login = server._gh.get_user().login
     # Persist so the token survives a restart (same as _apply_gh_token in cli.py).
     try:
-        from gh_rerunner.cli import _load_user_config, _save_user_config
+        from ghelper.cli import _load_user_config, _save_user_config
         cfg = _load_user_config()
         cfg["token"] = token
         _save_user_config(cfg)
@@ -210,10 +211,10 @@ def _clear_token(server: "JSONRPCServer") -> None:
     server._gh = None
     server.user_login = None
     os.environ.pop("GITHUB_TOKEN", None)
-    # Remove the persisted token from ~/.gh-rerunner.json so it is not
+    # Remove the persisted token from ~/.ghelper.json so it is not
     # reloaded on the next startup.
     try:
-        from gh_rerunner.cli import _load_user_config, _save_user_config
+        from ghelper.cli import _load_user_config, _save_user_config
         cfg = _load_user_config()
         if "token" in cfg:
             del cfg["token"]
@@ -234,7 +235,7 @@ class JSONRPCError(Exception):
 
 
 class JSONRPCServer:
-    """JSON-RPC 2.0 server for gh-rerunner status syncing and control"""
+    """JSON-RPC 2.0 server for ghelper status syncing and control"""
 
     # JSON-RPC error codes (standard)
     PARSE_ERROR = -32700
@@ -251,10 +252,10 @@ class JSONRPCServer:
     def __init__(
         self,
         token: Optional[str] = None,
-        cache_path: Path = Path.home() / ".gh-rerunner-cache.json",
-        session_path: Path = Path.home() / ".gh-rerunner-sessions.json",
-        trackers_path: Path = Path.home() / ".gh-rerunner-trackers.json",
-        repo_configs_path: Path = Path.home() / ".gh-rerunner-repo-configs.json",
+        cache_path: Path = Path.home() / ".ghelper-cache.json",
+        session_path: Path = Path.home() / ".ghelper-sessions.json",
+        trackers_path: Path = Path.home() / ".ghelper-trackers.json",
+        repo_configs_path: Path = Path.home() / ".ghelper-repo-configs.json",
     ):
         """
         Initialize JSON-RPC server.
@@ -532,6 +533,51 @@ class JSONRPCServer:
                     return True
             return False
 
+    def update_branch_tracker_sync(self, tracker_id: int) -> dict[str, Any]:
+        """Update a tracked PR's branch with its base branch (live API call).
+
+        Returns ``{"ok": bool, "error": str}``. This performs a synchronous
+        GitHub API call so the CLI key handler can invoke it directly; the web
+        path wraps it in a worker thread via :meth:`_tracker_update_branch`.
+        """
+        with self._tracker_lock:
+            tracker = next(
+                (t for t in self._trackers if int(t.get("id", 0) or 0) == int(tracker_id)),
+                None,
+            )
+            if tracker is None:
+                return {"ok": False, "error": "tracker not found"}
+            target = str(tracker.get("target", "")).strip()
+
+        if not self._gh:
+            return {"ok": False, "error": "not authenticated"}
+        match = _PR_URL_RE.search(target)
+        if not match:
+            return {"ok": False, "error": "target is not a PR URL"}
+        repo_name = match.group("repo")
+        pr_number = int(match.group("num"))
+
+        try:
+            repo = self._gh.get_repo(repo_name)
+            pr = repo.get_pull(pr_number)
+            mode = _trigger_update_branch(pr)
+        except Exception as exc:
+            msg = str(exc)
+            with self._tracker_lock:
+                tracker["last_error"] = msg
+                tracker["last_action"] = "update-branch-failed"
+            self._record_event(f"#{pr_number} {repo_name} update branch error: {msg}")
+            return {"ok": False, "error": msg}
+
+        with self._tracker_lock:
+            tracker["last_error"] = ""
+            tracker["last_action"] = "update-branch-triggered"
+            # Re-check soon so the freshly-updated branch's CI is picked up.
+            tracker["next_check_ts"] = 0.0
+            self._save_trackers()
+        self._record_event(f"#{pr_number} {repo_name} branch update queued [{mode}]")
+        return {"ok": True, "error": ""}
+
     def _load_trackers(self) -> list[dict[str, Any]]:
         if not self.trackers_path.exists():
             return []
@@ -681,7 +727,7 @@ class JSONRPCServer:
 
     async def start_background_tasks(self) -> None:
         if self._tracker_task is None or self._tracker_task.done():
-            self._tracker_task = asyncio.create_task(self._tracker_loop(), name="gh-rerunner-tracker-loop")
+            self._tracker_task = asyncio.create_task(self._tracker_loop(), name="ghelper-tracker-loop")
 
     async def stop_background_tasks(self) -> None:
         if self._tracker_task is None:
@@ -1126,6 +1172,7 @@ class JSONRPCServer:
             "trackerRemove": self._tracker_remove,
             "trackerAddAttempts": self._tracker_add_attempts,
             "trackerSetActive": self._tracker_set_active,
+            "trackerUpdateBranch": self._tracker_update_branch,
             "trackerUpdate": self._tracker_update,
             "trackerRefresh": self._tracker_refresh,
             "trackerReorder": self._tracker_reorder,
@@ -1314,6 +1361,7 @@ class JSONRPCServer:
                 "trackerRemove",
                 "trackerAddAttempts",
                 "trackerSetActive",
+                "trackerUpdateBranch",
                 "trackerRefresh",
                 "trackerReorder",
             ]
@@ -1491,6 +1539,19 @@ class JSONRPCServer:
                     self._save_trackers()
                     return {"tracker": dict(tracker)}
         raise JSONRPCError(self.INVALID_PARAMS, f"tracker id {tracker_id} not found")
+
+    async def _tracker_update_branch(self, tracker_id: int) -> dict[str, Any]:
+        """Update a tracked PR's branch with its base branch.
+
+        The live GitHub call runs in a worker thread to keep the event loop
+        responsive. Returns ``{"ok": bool, "error": str}``; a failed update is
+        surfaced as a normal result (not a JSON-RPC error) so the UI can show
+        the message inline.
+        """
+        result = await asyncio.to_thread(self.update_branch_tracker_sync, int(tracker_id))
+        if result.get("error") == "tracker not found":
+            raise JSONRPCError(self.INVALID_PARAMS, f"tracker id {tracker_id} not found")
+        return result
 
     async def _tracker_update(
         self,
@@ -1727,7 +1788,7 @@ class JSONRPCServer:
         request = urllib.request.Request(
             _GITHUB_OAUTH_TOKEN_URL,
             data=payload,
-            headers={"Accept": "application/json", "User-Agent": "gh-rerunner"},
+            headers={"Accept": "application/json", "User-Agent": "ghelper"},
             method="POST",
         )
         try:
@@ -1752,7 +1813,7 @@ class JSONRPCServer:
         if error == "slow_down":
             raise JSONRPCError(self.INTERNAL_ERROR, "slow_down")
         if error == "expired_token":
-            raise JSONRPCError(self.INTERNAL_ERROR, "The device authorization expired. Run gh-rerunner auth again.")
+            raise JSONRPCError(self.INTERNAL_ERROR, "The device authorization expired. Run ghelper auth again.")
 
         description = data.get("error_description") or (str(error) if error else "unknown error")
         raise JSONRPCError(self.INTERNAL_ERROR, f"GitHub device flow failed: {description}")
@@ -1908,7 +1969,7 @@ async def start_server(
     Start JSON-RPC server on Unix socket or TCP.
 
     Args:
-        socket_path: Unix socket path (e.g. ~/.gh-rerunner-server.sock)
+        socket_path: Unix socket path (e.g. ~/.ghelper-server.sock)
         token: GitHub token
         port: TCP port if using localhost
         host: TCP host if using localhost
