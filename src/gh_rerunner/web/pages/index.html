@@ -1,0 +1,2064 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>gh-rerunner | PR Operations</title>
+    <link rel="stylesheet" href="/static/common.css" />
+    <style>
+        body { padding: 32px 16px; }
+        .page { width: min(1100px, 100%); margin: 0 auto; }
+
+        /* ── Header ─────────────────────────────────────────────── */
+        .topbar {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 16px; margin-bottom: 24px; padding: 20px 24px;
+            background: var(--panel); border-radius: 12px;
+            box-shadow: var(--shadow-sm); border: 1px solid var(--line); flex-wrap: wrap;
+        }
+        .brand h1 { margin: 0; font-size: 1.25rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .auth-status { font-size: 13px; color: var(--muted); margin-top: 4px; display: flex; align-items: center; gap: 8px; }
+
+        /* ── Repo card shell ─────────────────────────────────────── */
+        .repo-card {
+            background: var(--panel); border: 1px solid var(--line);
+            border-radius: 12px; box-shadow: var(--shadow-sm);
+            margin-bottom: 24px; overflow: hidden; transition: box-shadow 0.2s;
+        }
+        .repo-card:hover { box-shadow: var(--shadow-md); }
+        .repo-header {
+            background: #fcfcfc; padding: 12px 20px;
+            border-bottom: 1px solid var(--line);
+            font-weight: 600; font-size: 15px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+
+        /* ── Status pills ────────────────────────────────────────── */
+        .pr-status-pill {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 2px 8px 2px 6px; border-radius: 999px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.01em;
+            flex-shrink: 0; white-space: nowrap;
+        }
+        .pr-status-pill::before {
+            content: ''; display: inline-block;
+            width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+        }
+        .status-passing      { background: #dafbe1; color: #1a7f37; }
+        .status-failed       { background: #ffebe9; color: #cf222e; }
+        .status-running      { background: #fff8c5; color: #9a6700; }
+        .status-pending      { background: #ddf4ff; color: #0550ae; }
+        .status-merged       { background: #fbefff; color: #8250df; }
+        .status-needs-action { background: #fff0e0; color: #953800; }
+        .status-closed       { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
+        .status-unknown      { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
+        .status-paused       { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
+        .status-retrying     { background: #fff3b0; color: #7d4e00; }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+        .pr-status-pill.status-retrying::before { animation: pulse-dot 1.2s ease-in-out infinite; }
+        .group-status-pill.status-retrying::before { animation: pulse-dot 1.2s ease-in-out infinite; }
+
+        /* ── Backport group status pills ─────────────────────────── */
+        .group-status-pills { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+        .group-status-pill {
+            display: inline-flex; align-items: center; gap: 3px;
+            padding: 1px 7px 1px 5px; border-radius: 999px;
+            font-size: 10px; font-weight: 600; white-space: nowrap;
+        }
+        .group-status-pill::before {
+            content: ''; display: inline-block;
+            width: 5px; height: 5px; border-radius: 50%; background: currentColor;
+        }
+
+        /* ── PR card (one tracked PR row) ────────────────────────── */
+        .pr-card { border-bottom: 1px solid var(--line); }
+        .pr-card:last-child { border-bottom: none; }
+        .pr-card-main {
+            padding: 14px 20px 14px 14px;
+            display: grid; grid-template-columns: 14px 18px 1fr auto;
+            gap: 8px 10px; align-items: start; transition: background 0.15s;
+        }
+        .pr-card:hover .pr-card-main { background: #fafbfc; }
+        .pr-card-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .pr-title { font-weight: 600; font-size: 14px; color: var(--primary); text-decoration: none; word-break: break-word; }
+        .pr-title:hover { text-decoration: underline; }
+        .pr-card-meta {
+            display: flex; align-items: center; gap: 6px;
+            flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 6px;
+        }
+        .meta-sep { color: #d0d7de; user-select: none; }
+        .retry-exhausted { color: #cf222e; font-weight: 600; }
+
+        /* ── GitHub-style checks list ─────────────────────────── */
+        .pr-checks { display: flex; flex-direction: column; margin-top: 8px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; font-size: 12px; }
+        .check-row { display: flex; align-items: center; gap: 7px; padding: 5px 10px; background: #fff; border-bottom: 1px solid #f0f4f8; min-height: 28px; }
+        .check-row:last-child { border-bottom: none; }
+        .check-row-pass    { --chk: #1a7f37; }
+        .check-row-fail    { --chk: #cf222e; }
+        .check-row-running { --chk: #bf8700; }
+        .check-row-pending { --chk: #57606a; }
+        .check-row-skipped, .check-row-neutral { --chk: #8b949e; }
+        .check-icon { flex-shrink: 0; color: var(--chk, #57606a); }
+        .check-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+        .check-name-ignored { text-decoration: line-through; color: #8b949e; }
+        .check-detail { color: #8b949e; font-size: 11px; flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .check-link { color: var(--blue, #0969da); font-size: 11px; flex-shrink: 0; text-decoration: none; margin-left: 4px; }
+        .check-link:hover { text-decoration: underline; }
+        .check-fold-btn { display: block; padding: 2px 10px 3px; background: none; border: none; color: #8b949e; font-size: 11px; cursor: pointer; text-align: left; }
+        .check-fold-btn:hover { color: #0969da; text-decoration: underline; }
+        .check-section-hdr { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 10px; background: #f6f8fa; border: none; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; color: #57606a; cursor: pointer; text-align: left; }
+        .check-section-hdr:hover { background: #eaeef2; }
+        .check-section-hdr:first-child { border-top: none; }
+        .check-section-hdr .chk-arrow { font-style: normal; width: 1em; text-align: center; flex-shrink: 0; }
+        .check-section-hdr .chk-summary { flex: 1; }
+        .check-section-hdr .chk-status { font-weight: 400; color: #8b949e; }
+
+        /* ── Action bar ──────────────────────────────────────────── */
+        .pr-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; padding-top: 1px; }
+
+        /* ── Retry indicator ────────────────────────────────────────── */
+        .retry-indicator {
+            display: inline-flex; align-items: center; gap: 0;
+            background: #f6f8fa; border: 1px solid #d0d7de;
+            border-radius: 4px; font-size: 11px; font-weight: 500; color: var(--muted);
+        }
+        .retry-indicator-count { padding: 1px 5px; }
+        .retry-indicator.retry-exhausted { background: #ffebe9; border-color: #ffc1c0; color: #cf222e; font-weight: 600; }
+        .inline-edit-btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            border: 0; border-left: 1px solid #d0d7de;
+            background: transparent; padding: 2px 5px; margin: 0;
+            cursor: pointer; color: var(--muted); line-height: 1;
+            border-radius: 0 3px 3px 0;
+        }
+        .retry-indicator.retry-exhausted .inline-edit-btn { border-left-color: #ffc1c0; }
+        .retry-indicator.retry-active { background: #fff3b0; border-color: #e6c619; color: #7d4e00; }
+        .retry-indicator.retry-active .retry-indicator-count::before { content: '↻\00a0'; animation: pulse-dot 1.2s ease-in-out infinite; display: inline-block; }
+        .retry-indicator.retry-active .inline-edit-btn { border-left-color: #e6c619; }
+        .inline-edit-btn:hover { color: var(--text); background: rgba(0,0,0,0.05); transform: none; box-shadow: none; }
+
+        /* ── Bulk selection ─────────────────────────────────────────── */
+        .pr-select-label { display: flex; align-items: flex-start; padding-top: 3px; cursor: pointer; }
+        .pr-select-cb { width: 14px; height: 14px; cursor: pointer; flex-shrink: 0; }
+        .pr-card-selected > .pr-card-main { background: #f0f6ff !important; }
+        #bulk-bar {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            background: #24292f; color: #e6edf3; border-radius: 10px;
+            padding: 10px 16px; display: flex; align-items: center; gap: 10px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.35); z-index: 200;
+            font-size: 13px; white-space: nowrap;
+        }
+        #bulk-bar[hidden] { display: none !important; }
+        .bulk-bar-count { font-weight: 600; color: #79c0ff; min-width: 70px; }
+        .bulk-bar-btn {
+            background: rgba(255,255,255,0.1); color: #e6edf3;
+            border: 1px solid rgba(255,255,255,0.18); border-radius: 6px;
+            padding: 4px 12px; font-size: 12px; cursor: pointer; font-weight: 500;
+        }
+        .bulk-bar-btn:hover { background: rgba(255,255,255,0.2); transform: none; box-shadow: none; }
+        .bulk-bar-btn-danger { background: rgba(248,81,73,0.15); border-color: rgba(248,81,73,0.35); color: #ff7b72; }
+        .bulk-bar-btn-danger:hover { background: rgba(248,81,73,0.3); }
+        .bulk-bar-sep { color: #444c56; user-select: none; }
+        .bulk-bar-clear { background: transparent; border: 0; color: #8b949e; font-size: 20px; cursor: pointer; line-height: 1; padding: 0 2px; }
+        .bulk-bar-clear:hover { color: #e6edf3; background: transparent; transform: none; box-shadow: none; }
+
+        /* ── Bulk retry panel ───────────────────────────────────────── */
+        #bulk-retry-panel {
+            position: fixed; bottom: 78px; left: 50%; transform: translateX(-50%);
+            background: #1c2128; color: #e6edf3; border-radius: 8px;
+            padding: 10px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.4); z-index: 200;
+            font-size: 12px; white-space: nowrap; border: 1px solid #30363d;
+        }
+        #bulk-retry-panel[hidden] { display: none !important; }
+        .bulk-retry-label { color: #8b949e; font-size: 11px; display: flex; align-items: center; gap: 5px; }
+        .bulk-retry-input {
+            background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+            border-radius: 4px; padding: 3px 7px; font-size: 12px; width: 60px;
+        }
+        .bulk-retry-input:focus { outline: none; border-color: #388bfd; box-shadow: 0 0 0 2px rgba(56,139,253,0.2); }
+
+        /* ── Drag-and-drop reordering ─────────────────────────────── */
+        .drag-handle {
+            display: flex; align-items: center; justify-content: center;
+            width: 14px; cursor: grab; color: var(--muted);
+            opacity: 0; flex-shrink: 0; padding: 2px 0;
+            touch-action: none; align-self: stretch;
+        }
+        .drag-handle svg { pointer-events: none; }
+        .drag-handle:active { cursor: grabbing; }
+        .pr-card:hover .drag-handle,
+        .group-shell:hover > .group-row .drag-handle { opacity: 0.4; }
+        .drag-handle:hover { opacity: 0.8 !important; }
+        .drag-handle-spacer { width: 14px; flex-shrink: 0; }
+        [data-tracker-ids].is-dragging { opacity: 0.35; }
+        [data-tracker-ids].drag-over-before { box-shadow: inset 0 2px 0 0 #0969da; }
+        [data-tracker-ids].drag-over-after  { box-shadow: inset 0 -2px 0 0 #0969da; }
+
+        /* ── Passed jobs summary chip ───────────────────────────────── */
+        .job-pill-passed-fold {
+            background: #f6f8fa; color: #57606a; border: 1px dashed #d0d7de;
+            cursor: pointer;
+        }
+        .job-pill-passed-fold:hover { background: #dafbe1; color: #1a7f37; border-color: #82cfaa; transform: none; box-shadow: none; }
+
+        /* ── Settings danger zone ───────────────────────────────────── */
+        .settings-danger {
+            margin-top: 10px; padding-top: 10px; border-top: 1px solid #ffc1c0;
+            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        }
+        .btn-danger-outline {
+            font-size: 12px; padding: 5px 12px;
+            background: transparent; color: #cf222e; border: 1px solid #ffc1c0;
+            border-radius: 5px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+        }
+        .btn-danger-outline:hover { background: #ffebe9; transform: none; box-shadow: none; }
+        .repo-select-all { width: 14px; height: 14px; cursor: pointer; }
+
+        /* ── Inline settings panel ───────────────────────────────── */
+        .settings-panel { border-top: 1px solid var(--line); background: #f6f8fa; padding: 14px 20px; }
+        .settings-panel[hidden] { display: none !important; }
+        .settings-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #e7eaed; }
+        .settings-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 6px; }
+        .settings-close { background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; border-radius: 4px; }
+        .settings-close:hover { color: var(--text); background: rgba(0,0,0,0.05); transform: none; box-shadow: none; }
+        .settings-grid { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; margin-bottom: 12px; }
+        .settings-field { display: flex; flex-direction: column; gap: 4px; }
+        .settings-field > label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+        .settings-field input[type="number"] { width: 80px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; font-size: 13px; background: #fff; }
+        .settings-field-check { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 2px; }
+        .settings-field-check > label { font-size: 13px; font-weight: 500; color: var(--text); text-transform: none; letter-spacing: 0; cursor: pointer; }
+        .settings-field-wide { flex: 1 1 100%; min-width: 0; }
+        .settings-field-wide textarea {
+            width: 100%; box-sizing: border-box; padding: 6px 8px;
+            border: 1px solid var(--line); border-radius: 5px;
+            font-size: 12px; font-family: var(--font-mono, monospace);
+            background: #fff; resize: vertical; min-height: 52px; max-height: 120px;
+        }
+        .settings-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .btn-sm { font-size: 12px; padding: 5px 12px; }
+        .btn-reset-retries {
+            background: transparent; border: 0; font-size: 11px; color: var(--muted);
+            cursor: pointer; padding: 4px 6px; border-radius: 4px;
+            display: inline-flex; align-items: center; gap: 4px; margin-left: auto;
+        }
+        .btn-reset-retries:hover { color: var(--text); background: rgba(0,0,0,0.05); transform: none; box-shadow: none; }
+        .settings-danger-hint { font-size: 11px; color: var(--muted); }
+
+        /* ── Branch chip ─────────────────────────────────────────── */
+        .branch-chip {
+            display: inline-flex; align-items: center; gap: 4px;
+            background: #fbefff; color: #8250df; border: 1px solid #d8b4fe;
+            border-radius: 4px; padding: 1px 6px; font-size: 11px; font-weight: 500;
+        }
+
+        /* ── Backport group row ──────────────────────────────────── */
+        .group-shell { border-bottom: 1px solid var(--line); }
+        .group-shell:last-child { border-bottom: none; }
+        .group-shell.is-backport { border-left: 3px solid #8250df; }
+        .group-row {
+            display: grid; grid-template-columns: 14px 18px 1fr auto;
+            gap: 8px 10px; align-items: start;
+            padding: 12px 20px 12px 14px;
+            border-bottom: 1px solid var(--line);
+            background: #faf5ff; cursor: pointer;
+            user-select: none; transition: background 0.15s;
+        }
+        .group-row:hover { background: #f2e9ff; }
+        .group-row-check { display: flex; align-items: flex-start; padding-top: 3px; }
+        .group-row-check input { width: 14px; height: 14px; cursor: pointer; flex-shrink: 0; }
+        .group-head-left { display: flex; align-items: flex-start; gap: 10px; }
+        .backport-icon { color: #8250df; margin-top: 1px; flex-shrink: 0; }
+        .group-title { color: var(--text); font-size: 15px; font-weight: 600; line-height: 1.3; }
+        .group-subtitle { color: var(--muted); font-size: 12px; margin-top: 4px; }
+        .group-branches-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+        .group-caret { color: var(--muted); font-size: 12px; padding-top: 3px; flex-shrink: 0; }
+
+        /* ── Assigned PRs wizard ─────────────────────────────────── */
+        .assigned-summary { font-size: 13px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .assigned-chip { background: #eaf5ff; color: #0550ae; border: 1px solid #b6e3ff; border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 600; }
+        .assigned-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+        .assigned-list { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+        .assigned-group-row { border-bottom: 1px solid var(--line); }
+        .assigned-group-row:last-child { border-bottom: none; }
+        .assigned-group-header { padding: 12px 16px; background: #fcfcfc; cursor: pointer; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: flex-start; }
+        .assigned-group-title { font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
+        .assigned-group-meta { margin-top: 4px; font-size: 11px; color: var(--muted); }
+        .assigned-pr-row { display: grid; grid-template-columns: auto 1fr; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); align-items: start; }
+        .assigned-pr-row:first-child { border-top: none; }
+        .assigned-pr-main { min-width: 0; }
+        .assigned-pr-title { font-size: 13px; font-weight: 600; }
+        .assigned-pr-url { font-size: 12px; color: var(--muted); margin-top: 3px; word-break: break-all; }
+        .assigned-pr-detail { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+        .import-settings { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin-bottom: 16px; }
+        .import-settings label { font-size: 12px; font-weight: 600; color: var(--text); display: block; margin-bottom: 6px; }
+        .import-settings input[type="number"] { width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+        .import-status { font-size: 13px; color: var(--muted); margin-bottom: 12px; min-height: 18px; }
+
+        .auth-shell { width: 100%; max-width: 520px; }
+        .auth-frame { height: min(78vh, 760px); }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <header class="topbar">
+            <div class="brand">
+                <h1>
+                    <svg aria-hidden="true" height="20" viewBox="0 0 16 16" width="20" data-view-component="true" class="octicon" style="fill: var(--text);">
+                        <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm4.879-2.773 4.264 2.559a.25.25 0 0 1 0 .428l-4.264 2.559A.25.25 0 0 1 6 10.559V5.44a.25.25 0 0 1 .379-.213Z"></path>
+                    </svg>
+                    PR CI Rerunner
+                </h1>
+                <div class="auth-status">
+                    <span id="authStatus">Checking session...</span>
+                    <span>•</span>
+                    <span id="trackerSummary">No trackers active.</span>
+                </div>
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button id="trackerAdd" class="primary">
+                    <svg class="octicon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" style="margin-right: 6px; fill: currentColor;"><path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"></path></svg>
+                    Add Target
+                </button>
+                <button id="trackerRefreshAll" class="secondary">
+                    <svg class="octicon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" style="margin-right: 6px; fill: currentColor;"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"></path></svg>
+                    Sync All
+                </button>
+                <button id="trackerCopyReport" class="secondary" title="Copy a markdown status report of all tracked PRs to clipboard" onclick="copyStatusReport()">
+                    <svg class="octicon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" style="margin-right: 6px; fill: currentColor;"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+                    Copy Report
+                </button>
+            </div>
+        </header>
+        <div id="trackerTree"></div>
+
+        <div id="debugTools" style="margin-top: 40px; opacity: 0.8;" hidden>
+            <h3 class="mono" style="font-size: 14px;">Debug Diagnostics</h3>
+            <pre id="response" class="mono" style="background: #24292e; color: #e6edf3; padding: 12px; border-radius: 6px; font-size: 11px; max-height: 200px; overflow: auto;"></pre>
+            <div id="console" style="display:none;"></div>
+        </div>
+    </div>
+
+    <div id="wizardBackdrop" class="wizard-backdrop" hidden>
+        <div class="wizard-window" style="max-width: 900px;">
+            <div class="wiz-header"><h3 style="margin:0;">Add Tracking Targets</h3></div>
+            <div class="wiz-body">
+                <div class="import-panel">
+                    <textarea id="wizardImportText" placeholder="Paste PR URLs, markdown links, or owner/repo#123 references"></textarea>
+                    <div class="import-actions">
+                        <button id="wizardImportFromText" class="secondary">Import From Text</button>
+                        <button id="wizardLoadAssigned" class="secondary">Get Assigned PRs</button>
+                    </div>
+                </div>
+                <div class="import-settings">
+                    <div>
+                        <label for="wizardAttempts">Retries</label>
+                        <input id="wizardAttempts" type="number" value="2" min="1" />
+                    </div>
+                    <div>
+                        <label for="wizardInterval">Interval (s)</label>
+                        <input id="wizardInterval" type="number" value="60" min="5" />
+                    </div>
+                    <div style="display:flex; align-items:flex-end; padding-bottom:1px;">
+                        <label style="font-size: 13px; font-weight: 500; margin: 0; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input id="wizardAuto" type="checkbox" checked style="margin:0; width:16px; height:16px;" /> Auto-rerun
+                        </label>
+                    </div>
+                </div>
+                <div id="wizardImportStatus" class="import-status"></div>
+                <div id="wizardAssignedSummary" class="assigned-summary"></div>
+                <div id="wizardAssignedBody"></div>
+            </div>
+            <div class="wiz-footer">
+                <button id="wizardAddSelected" class="primary" disabled>Add Selected (0)</button>
+                <button id="wizardCancel1" class="secondary">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="authBackdrop" class="wizard-backdrop" hidden>
+        <div class="wizard-window auth-shell">
+            <div class="wiz-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                <h3 style="margin:0;">Sign in</h3>
+                <button id="authCloseBtn" class="secondary">Close</button>
+            </div>
+            <iframe id="authFrame" class="auth-frame" title="Sign in to gh-rerunner" src="about:blank"></iframe>
+        </div>
+    </div>
+
+    <div id="addTargetsBackdrop" class="wizard-backdrop" hidden>
+        <div class="wizard-window" style="max-width: 980px; height: min(84vh, 920px);">
+            <div class="wiz-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                <h3 style="margin:0;">Add Tracking Targets</h3>
+                <button id="addTargetsCloseBtn" class="secondary">Close</button>
+            </div>
+            <iframe id="addTargetsFrame" class="auth-frame" title="Add tracking targets" src="about:blank"></iframe>
+        </div>
+    </div>
+
+    <div id="repoConfigBackdrop" class="wizard-backdrop" hidden>
+        <div class="wizard-window" style="max-width: 520px;">
+            <div class="wiz-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                <h3 style="margin:0;">Repo config — <code id="repoConfigTitle" style="font-size:1rem;"></code></h3>
+                <button id="repoConfigCloseBtn" class="secondary">Close</button>
+            </div>
+            <div class="wiz-body" style="display:flex;flex-direction:column;gap:10px;">
+                <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;">Regular PRs (targeting main / master)</div>
+                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Ignore workflows <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line — never auto-rerun)</span></label>
+                <textarea id="repo-config-ignore" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:56px;max-height:120px;background:#fff;" placeholder="e.g. lint&#10;build / deploy"></textarea>
+                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required approvals <span style="font-weight:400;text-transform:none;letter-spacing:0">(0 = not checked)</span></label>
+                <input type="number" min="0" step="1" id="repo-config-req-reviews" style="width:80px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;background:#fff;" value="0">
+                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></label>
+                <textarea id="repo-config-req-labels" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:40px;max-height:100px;background:#fff;" placeholder="e.g. approved"></textarea>
+                <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;margin-top:6px;">Backport PRs (target branch ≠ main / master)</div>
+                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Ignore workflows <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line — never auto-rerun)</span></label>
+                <textarea id="repo-config-bp-ignore" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:56px;max-height:120px;background:#fff;" placeholder="e.g. lint&#10;build / deploy"></textarea>
+                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required approvals <span style="font-weight:400;text-transform:none;letter-spacing:0">(0 = not checked)</span></label>
+                <input type="number" min="0" step="1" id="repo-config-bp-req-reviews" style="width:80px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;background:#fff;" value="0">
+                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></label>
+                <textarea id="repo-config-bp-req-labels" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:40px;max-height:100px;background:#fff;" placeholder="e.g. backport-approved"></textarea>
+            </div>
+            <div class="wiz-footer">
+                <button class="secondary" onclick="closeRepoConfigModal()">Cancel</button>
+                <button class="primary" onclick="repoSaveIgnore()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="bulk-retry-panel" hidden>
+        <span style="font-weight:600;color:#79c0ff;font-size:12px;">Retry settings</span>
+        <span class="bulk-bar-sep">|</span>
+        <label class="bulk-retry-label">
+            Attempts
+            <input type="number" class="bulk-retry-input" id="bulk-set-attempts" value="3" min="1" max="20">
+        </label>
+        <label class="bulk-retry-label">
+            Interval (s)
+            <input type="number" class="bulk-retry-input" id="bulk-set-interval" value="60" min="10" max="3600">
+        </label>
+        <label class="bulk-retry-label" style="gap:6px;">
+            <input type="checkbox" id="bulk-set-auto" checked>
+            Auto-rerun
+        </label>
+        <span class="bulk-bar-sep">|</span>
+        <button class="bulk-bar-btn" onclick="bulkApplyRetries()">Apply to selected</button>
+        <button class="bulk-bar-clear" onclick="toggleBulkRetryPanel()" title="Close" aria-label="Close" style="font-size:16px;">&times;</button>
+    </div>
+
+    <div id="bulk-bar" hidden>
+        <span class="bulk-bar-count" id="bulk-count">0 selected</span>
+        <span class="bulk-bar-sep">|</span>
+        <button class="bulk-bar-btn" onclick="bulkAction('refresh')">
+            <svg viewBox="0 0 16 16" width="12" height="12" style="fill:currentColor;vertical-align:-1px;margin-right:4px" aria-hidden="true"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>Sync
+        </button>
+        <button class="bulk-bar-btn" onclick="bulkAction('pause')">Pause</button>
+        <button class="bulk-bar-btn" onclick="bulkAction('resume')">Resume</button>
+        <button class="bulk-bar-btn" onclick="bulkAction('reset-retries')">
+            <svg viewBox="0 0 16 16" width="12" height="12" style="fill:currentColor;vertical-align:-1px;margin-right:4px" aria-hidden="true"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>Reset retries
+        </button>
+        <button class="bulk-bar-btn" onclick="toggleBulkRetryPanel()">
+            <svg viewBox="0 0 16 16" width="12" height="12" style="fill:currentColor;vertical-align:-1px;margin-right:4px" aria-hidden="true"><path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.038.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.103-.303c-.066-.019-.176-.011-.299.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.103.303c.066.019.176.011.299-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.166.625 6.713.075 7.456.011 7.63.003 7.815 0 8 0Zm-.571 2.786A1 1 0 0 0 7 3.757v.429l-.002.043a4.004 4.004 0 0 0-1.06.435l-.004.003-.366-.212a1 1 0 0 0-1.364.364 5.929 5.929 0 0 0-.534.924 1 1 0 0 0 .364 1.364l.366.212.002.003a3.999 3.999 0 0 0 0 1.222l-.002.003-.366.212a1 1 0 0 0-.364 1.364c.161.329.352.639.534.924a1 1 0 0 0 1.364.364l.366-.212.004.003c.328.169.682.306 1.06.435l.002.043v.429a1 1 0 0 0 1.858.514 5.96 5.96 0 0 0 .534-.924 1 1 0 0 0-.364-1.364l-.366-.212-.002-.003a3.999 3.999 0 0 0 0-1.222l.002-.003.366-.212a1 1 0 0 0 .364-1.364 5.96 5.96 0 0 0-.534-.924 1 1 0 0 0-1.364-.364l-.366.212-.004-.003a4.004 4.004 0 0 0-1.06-.435L8.571 4.186v-.429a1 1 0 0 0-1.143-.971ZM8 6a2 2 0 1 1 0 4A2 2 0 0 1 8 6Z"/></svg>Retries…
+        </button>
+        <span class="bulk-bar-sep">|</span>
+        <button class="bulk-bar-btn" onclick="copyStatusReport()">
+            <svg viewBox="0 0 16 16" width="12" height="12" style="fill:currentColor;vertical-align:-1px;margin-right:4px" aria-hidden="true"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>Copy Report
+        </button>
+        <span class="bulk-bar-sep">|</span>
+        <button class="bulk-bar-btn bulk-bar-btn-danger" onclick="bulkAction('remove')">
+            <svg viewBox="0 0 16 16" width="12" height="12" style="fill:currentColor;vertical-align:-1px;margin-right:4px" aria-hidden="true"><path d="M6.5 1.75a.75.75 0 0 0-.75.75V3h-2a.75.75 0 0 0 0 1.5h.433l.667 8.36A1.75 1.75 0 0 0 6.594 14.5h2.812a1.75 1.75 0 0 0 1.744-1.64l.667-8.36h.433a.75.75 0 0 0 0-1.5h-2v-.5a.75.75 0 0 0-.75-.75h-3Zm2.25 1.25v.5h-1.5V3h1.5Zm-2.827 1.5h4.154l-.642 8.048a.25.25 0 0 1-.249.234H6.594a.25.25 0 0 1-.249-.234L5.923 4.5Zm1.077 1.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V7a.75.75 0 0 1 .75-.75Zm3 0a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V7a.75.75 0 0 1 .75-.75Z"/></svg>Remove
+        </button>
+        <button class="bulk-bar-clear" onclick="clearSelection()" title="Clear selection" aria-label="Clear selection">&times;</button>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script src="/static/common.js"></script>
+    <script>
+
+        /* Logic for RPC and UI handling */
+        let nextId = 10;
+        const responseEl = document.getElementById('response');
+        const consoleEl = document.getElementById('console');
+        const debugToolsEl = document.getElementById('debugTools');
+        const wizardBackdropEl = document.getElementById('wizardBackdrop');
+        const trackerSummaryEl = document.getElementById('trackerSummary');
+        const trackerTreeEl = document.getElementById('trackerTree');
+
+        function showToast(message, type = 'info', durationMs = 4000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `<span>${escapeHtml(message)}</span><button class="toast-close" aria-label="Dismiss">&times;</button>`;
+            toast.querySelector('.toast-close').onclick = () => toast.remove();
+            container.appendChild(toast);
+            if (durationMs > 0) setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; setTimeout(() => toast.remove(), 300); }, durationMs);
+        }
+        const wizardAssignedSummaryEl = document.getElementById('wizardAssignedSummary');
+        const wizardAssignedBodyEl = document.getElementById('wizardAssignedBody');
+        const wizardAddSelectedBtn = document.getElementById('wizardAddSelected');
+        const wizardImportTextEl = document.getElementById('wizardImportText');
+        const wizardImportFromTextBtn = document.getElementById('wizardImportFromText');
+        const wizardLoadAssignedBtn = document.getElementById('wizardLoadAssigned');
+        const wizardAttemptsEl = document.getElementById('wizardAttempts');
+        const wizardIntervalEl = document.getElementById('wizardInterval');
+        const wizardAutoEl = document.getElementById('wizardAuto');
+        const wizardImportStatusEl = document.getElementById('wizardImportStatus');
+        const authStatusEl = document.getElementById('authStatus');
+        const wizardCancel1Btn = document.getElementById('wizardCancel1');
+        const authBackdropEl = document.getElementById('authBackdrop');
+        const authCloseBtn = document.getElementById('authCloseBtn');
+        const authFrameEl = document.getElementById('authFrame');
+        const addTargetsBackdropEl = document.getElementById('addTargetsBackdrop');
+        const addTargetsCloseBtn = document.getElementById('addTargetsCloseBtn');
+        const addTargetsFrameEl = document.getElementById('addTargetsFrame');
+        const repoConfigBackdropEl = document.getElementById('repoConfigBackdrop');
+        document.getElementById('repoConfigCloseBtn').onclick = () => closeRepoConfigModal();
+        repoConfigBackdropEl.addEventListener('click', e => { if (e.target === repoConfigBackdropEl) closeRepoConfigModal(); });
+        let _repoConfigActiveRepo = null;
+
+        // normalizeAssignedUrl is an alias for the shared normalizeUrl utility
+        const normalizeAssignedUrl = normalizeUrl;
+        
+        let trackerRows = [];
+        let repoConfigs = {};  // repo -> { ignore_jobs: string[] }
+        const expandedBackportGroups = new Set();
+        const expandedPassedJobs = new Set();
+        const expandedAllJobs = new Set();
+        const toggledSections = new Set(); // "${trackerId}:ci|reviews|labels" — flips from default
+        const selectedTrackers = new Set();
+        let debugVisible = false;
+        const wizardState = {
+            assigned: [],
+            title: 'Imported PRs',
+            fetching: false,
+            adding: false,
+            importingText: false,
+            totalAssigned: 0,
+            hiddenTracked: 0,
+            selected: new Set(),
+            expandedGroups: new Set(),
+        };
+
+        function formatAge(ts) {
+            const n = Number(ts || 0); if (!n) return '-';
+            const diff = Math.max(0, Math.floor(Date.now() / 1000 - n));
+            if (diff < 60) return `${diff}s ago`;
+            if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+            return `${Math.floor(diff/3600)}h ago`;
+        }
+
+        async function sendRpc(payload) {
+            try {
+                const res = await fetch('/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const data = await res.json();
+                responseEl.textContent = JSON.stringify(data, null, 2);
+                return data;
+            } catch (err) { return null; }
+        }
+
+        async function refreshAuthStatus() {
+            try {
+                const res = await fetch('/auth/status');
+                const data = await res.json();
+                if (data && data.authenticated) {
+                    authStatusEl.innerHTML = `<strong>${escapeHtml(data.login)}</strong> <button class="secondary" style="padding:2px 8px; font-size:11px; margin-left:8px;" onclick="logoutAuth()">Logout</button>`;
+                } else {
+                    authStatusEl.innerHTML = `<button class="primary" style="padding:2px 8px; font-size:11px;" onclick="openAuthModal()">Login</button>`;
+                }
+            } catch (e) { authStatusEl.textContent = "Offline"; }
+        }
+
+        async function logoutAuth() {
+            try {
+                await fetch('/auth/logout', { method: 'POST' });
+            } finally {
+                closeAuthModal();
+                await refreshAuthStatus();
+            }
+        }
+
+        function openAuthModal() {
+            authBackdropEl.hidden = false;
+            authFrameEl.src = `/auth?embedded=1&_=${Date.now()}`;
+        }
+
+        function closeAuthModal() {
+            authBackdropEl.hidden = true;
+        }
+
+        function openAddTargetsModal(fetchAssigned = false) {
+            addTargetsBackdropEl.hidden = false;
+            addTargetsFrameEl.src = `/add-targets?embedded=1${fetchAssigned ? '&fetch_assigned=1' : ''}&_=${Date.now()}`;
+        }
+
+        function closeAddTargetsModal() {
+            addTargetsBackdropEl.hidden = true;
+        }
+
+        function openRepoConfigModal(repo) {
+            _repoConfigActiveRepo = repo;
+            const cfg = repoConfigs[repo] || {};
+            document.getElementById('repoConfigTitle').textContent = repo;
+            document.getElementById('repo-config-ignore').value = (cfg.ignore_jobs || []).join('\n');
+            document.getElementById('repo-config-req-reviews').value = cfg.required_reviews ?? 0;
+            document.getElementById('repo-config-req-labels').value = (cfg.required_labels || []).join('\n');
+            document.getElementById('repo-config-bp-ignore').value = (cfg.backport_ignore_jobs || []).join('\n');
+            document.getElementById('repo-config-bp-req-reviews').value = cfg.backport_required_reviews ?? 0;
+            document.getElementById('repo-config-bp-req-labels').value = (cfg.backport_required_labels || []).join('\n');
+            repoConfigBackdropEl.hidden = false;
+        }
+        window.openRepoConfigModal = openRepoConfigModal;
+
+        function closeRepoConfigModal() {
+            repoConfigBackdropEl.hidden = true;
+            _repoConfigActiveRepo = null;
+        }
+        window.closeRepoConfigModal = closeRepoConfigModal;
+
+        window.addEventListener('message', async (event) => {
+            if (event.origin !== window.location.origin) return;
+            const data = event.data || {};
+            if (data.type === 'gh-rerunner-auth-success') {
+                closeAuthModal();
+                await refreshAuthStatus();
+                // forward to add-targets iframe in case it triggered the login
+                if (addTargetsFrameEl.contentWindow) {
+                    addTargetsFrameEl.contentWindow.postMessage(data, window.location.origin);
+                }
+                return;
+            }
+            if (data.type === 'gh-rerunner-open-auth') {
+                openAuthModal();
+                return;
+            }
+            if (data.type === 'gh-rerunner-add-targets-close') {
+                closeAddTargetsModal();
+                return;
+            }
+            if (data.type === 'gh-rerunner-trackers-updated') {
+                await refreshTrackersView();
+            }
+        });
+
+        function openAssignedWizard(fetchAssigned = false) {
+            wizardState.selected.clear();
+            wizardState.expandedGroups.clear();
+            wizardBackdropEl.hidden = false;
+            wizardImportStatusEl.textContent = '';
+            if (!wizardState.assigned.length) renderAssignedWizardMessage('Paste text or load assigned PRs to build a selection list.');
+            else renderAssignedWizardState();
+            if (fetchAssigned) void loadAssignedWizard(true);
+        }
+
+        function closeAssignedWizard() {
+            wizardBackdropEl.hidden = true;
+        }
+
+        function setWizardStatus(text, isError = false) {
+            if (isError) {
+                showToast(text, 'error');
+                wizardImportStatusEl.textContent = '';
+            } else {
+                wizardImportStatusEl.style.color = 'var(--muted)';
+                wizardImportStatusEl.textContent = text || '';
+            }
+        }
+
+        function getTrackedUrlSet() {
+            return new Set((trackerRows || []).map((row) => normalizeAssignedUrl(row.target)).filter(Boolean));
+        }
+
+        function renderAssignedWizardLoading() {
+            wizardAssignedSummaryEl.innerHTML = `<span class="assigned-chip">Fetching Assigned PRs</span>`;
+            wizardAssignedBodyEl.innerHTML = `
+                <div class="assigned-loading"></div>
+                <div class="assigned-loading-row"></div>
+                <div class="assigned-loading-row"></div>
+                <div class="assigned-loading-row"></div>
+            `;
+            wizardAddSelectedBtn.disabled = true;
+            wizardAddSelectedBtn.textContent = 'Add Selected (0)';
+        }
+
+        function renderAssignedWizardMessage(message, isError) {
+            if (isError) {
+                showToast(message, 'error');
+                wizardAssignedSummaryEl.innerHTML = '';
+                wizardAssignedBodyEl.innerHTML = '';
+                wizardAddSelectedBtn.disabled = true;
+                wizardAddSelectedBtn.textContent = 'Add Selected (0)';
+                return;
+            }
+            wizardAssignedSummaryEl.innerHTML = '<span class="assigned-chip">' + escapeHtml(message) + '</span>';
+            wizardAssignedBodyEl.innerHTML = '';
+            wizardAddSelectedBtn.disabled = true;
+            wizardAddSelectedBtn.textContent = 'Add Selected (0)';
+        }
+
+        function extractPrEntriesFromText(rawText) {
+            const text = String(rawText || '');
+            const entries = [];
+            const seen = new Set();
+            const pushUrl = (url, detail) => {
+                const normalized = normalizeAssignedUrl(url);
+                if (!normalized || seen.has(normalized)) return;
+                seen.add(normalized);
+                entries.push({ branch: '', url: normalized, detail });
+            };
+
+            const urlRegex = /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/gi;
+            let match;
+            while ((match = urlRegex.exec(text)) !== null) {
+                pushUrl(`https://github.com/${match[1]}/pull/${match[2]}`, 'Imported from pasted text');
+            }
+
+            const refRegex = /(^|\s|\()([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)\b/gm;
+            while ((match = refRegex.exec(text)) !== null) {
+                pushUrl(`https://github.com/${match[2]}/pull/${match[3]}`, 'Imported from pasted text');
+            }
+
+            return entries;
+        }
+
+        function mergeWizardEntries(newEntries, sourceLabel) {
+            const merged = new Map();
+            wizardState.assigned.forEach((entry) => {
+                const key = normalizeAssignedUrl(entry.url);
+                if (!key) return;
+                merged.set(key, {
+                    branch: String(entry.branch || '').trim(),
+                    url: key,
+                    detail: String(entry.detail || '').trim(),
+                });
+            });
+
+            newEntries.forEach((entry) => {
+                const key = normalizeAssignedUrl(entry.url);
+                if (!key) return;
+                const existing = merged.get(key);
+                const branch = String(entry.branch || '').trim();
+                const detail = String(entry.detail || '').trim();
+                if (existing) {
+                    if (!existing.branch && branch) existing.branch = branch;
+                    if ((!existing.detail || existing.detail === 'Imported from pasted text') && detail) existing.detail = detail;
+                    return;
+                }
+                merged.set(key, {
+                    branch,
+                    url: key,
+                    detail: detail || sourceLabel,
+                });
+            });
+
+            wizardState.assigned = [...merged.values()];
+        }
+
+        function importTargetsFromText() {
+            const entries = extractPrEntriesFromText(wizardImportTextEl.value);
+            if (!entries.length) {
+                setWizardStatus('No PR references detected. Paste GitHub PR URLs, markdown links, or owner/repo#123.', true);
+                return;
+            }
+            mergeWizardEntries(entries, 'Imported from pasted text');
+            buildAssignedGroups(wizardState.assigned).forEach((group) => wizardState.expandedGroups.add(group.id));
+            setWizardStatus(`Imported ${entries.length} PR${entries.length === 1 ? '' : 's'} from text.`);
+            wizardState.title = 'Imported PRs';
+            renderAssignedWizardState();
+        }
+
+        async function addAssignedTargets(urls) {
+            const uniqueUrls = [...new Set((urls || []).map(url => String(url || '').trim()).filter(Boolean))];
+            if (!uniqueUrls.length) return false;
+            const attempts = Math.max(1, Number(wizardAttemptsEl.value) || 2);
+            const intervalSeconds = Math.max(5, Number(wizardIntervalEl.value) || 60);
+            const data = await sendRpc({
+                jsonrpc: '2.0',
+                id: nextId++,
+                method: 'trackerAddTargets',
+                params: {
+                    targets_text: uniqueUrls.join('\n'),
+                    attempts,
+                    interval_seconds: intervalSeconds,
+                    auto_rerun: wizardAutoEl.checked,
+                    ignore_jobs: [],
+                },
+            });
+            if (!data || data.error) return false;
+            await refreshTrackersView();
+            return true;
+        }
+
+        function buildAssignedGroups(entries) {
+            const groups = new Map();
+            entries.forEach((entry, index) => {
+                const url = normalizeAssignedUrl(entry.url);
+                if (!url) return;
+                const repo = extractRepoFromUrl(url) || 'Other repositories';
+                const groupId = repo.toLowerCase();
+                if (!groups.has(groupId)) groups.set(groupId, { id: groupId, title: repo, items: [] });
+                groups.get(groupId).items.push({
+                    key: `${url}::${index}`,
+                    url,
+                    branch: String(entry.branch || '').trim(),
+                    detail: String(entry.detail || '').trim(),
+                });
+            });
+            return [...groups.values()]
+                .map((group) => ({ ...group, items: group.items.sort((a, b) => (a.branch || a.url).localeCompare(b.branch || b.url)) }))
+                .sort((a, b) => a.title.localeCompare(b.title));
+        }
+
+        function assignedToggleGroup(groupId) {
+            if (wizardState.expandedGroups.has(groupId)) wizardState.expandedGroups.delete(groupId);
+            else wizardState.expandedGroups.add(groupId);
+            renderAssignedWizardState();
+        }
+
+        function assignedToggleEntry(url, checked) {
+            if (checked) wizardState.selected.add(url);
+            else wizardState.selected.delete(url);
+            renderAssignedWizardState();
+        }
+
+        function assignedToggleGroupSelection(groupId, checked) {
+            const tracked = getTrackedUrlSet();
+            const groups = buildAssignedGroups(wizardState.assigned);
+            const group = groups.find((g) => g.id === groupId);
+            if (!group) return;
+            group.items.forEach((item) => {
+                if (tracked.has(item.url)) return;
+                if (checked) wizardState.selected.add(item.url);
+                else wizardState.selected.delete(item.url);
+            });
+            renderAssignedWizardState();
+        }
+
+        function assignedToggleAllVisible(checked) {
+            const tracked = getTrackedUrlSet();
+            const groups = buildAssignedGroups(wizardState.assigned);
+            groups.forEach((group) => {
+                group.items.forEach((item) => {
+                    if (tracked.has(item.url)) return;
+                    if (checked) wizardState.selected.add(item.url);
+                    else wizardState.selected.delete(item.url);
+                });
+            });
+            renderAssignedWizardState();
+        }
+
+        function renderAssignedWizardState() {
+            const tracked = getTrackedUrlSet();
+            const groups = buildAssignedGroups(wizardState.assigned).map((group) => ({
+                ...group,
+                items: group.items.filter((item) => !tracked.has(item.url)),
+            })).filter((group) => group.items.length > 0);
+
+            const visibleUrls = new Set(groups.flatMap((group) => group.items.map((item) => item.url)));
+            [...wizardState.selected].forEach((url) => {
+                if (!visibleUrls.has(url)) wizardState.selected.delete(url);
+            });
+
+            wizardState.hiddenTracked = wizardState.assigned.length - visibleUrls.size;
+            const selectedCount = wizardState.selected.size;
+            const availableCount = visibleUrls.size;
+            const allSelected = availableCount > 0 && selectedCount === availableCount;
+
+            wizardAssignedSummaryEl.innerHTML = `
+                <span class="assigned-chip">${escapeHtml(wizardState.title)} · ${availableCount} available</span>
+                <span class="assigned-chip">${selectedCount} selected</span>
+                ${wizardState.hiddenTracked > 0 ? `<span class="assigned-chip">${wizardState.hiddenTracked} already tracked</span>` : ''}
+            `;
+
+            wizardAddSelectedBtn.disabled = wizardState.adding || selectedCount === 0;
+            wizardAddSelectedBtn.textContent = wizardState.adding ? `Adding ${selectedCount}...` : `Add Selected (${selectedCount})`;
+
+            if (!groups.length) {
+                const emptyText = wizardState.hiddenTracked > 0
+                    ? 'All imported PRs are already tracked.'
+                    : 'Paste text or click Get Assigned PRs to build your list.';
+                wizardAssignedBodyEl.innerHTML = `<div style="padding: 16px; color: var(--muted); border: 1px solid var(--line); border-radius: 8px;">${escapeHtml(emptyText)}</div>`;
+                return;
+            }
+
+            wizardAssignedBodyEl.innerHTML = `
+                <div class="assigned-toolbar">
+                    <label>
+                        <input type="checkbox" ${allSelected ? 'checked' : ''} onchange="assignedToggleAllVisible(this.checked)">
+                        Select all visible
+                    </label>
+                </div>
+                <div class="assigned-list">
+                    ${groups.map((group) => {
+                        const groupUrls = group.items.map((item) => item.url);
+                        const selectedInGroup = groupUrls.filter((url) => wizardState.selected.has(url)).length;
+                        const groupAllSelected = groupUrls.length > 0 && selectedInGroup === groupUrls.length;
+                        const expanded = wizardState.expandedGroups.has(group.id);
+                        return `
+                            <div class="assigned-group-row">
+                                <div class="assigned-group-header" onclick="assignedToggleGroup(${JSON.stringify(group.id)})">
+                                    <div>
+                                        <div class="assigned-group-title">
+                                            <input type="checkbox" ${groupAllSelected ? 'checked' : ''} onclick="event.stopPropagation(); assignedToggleGroupSelection(${JSON.stringify(group.id)}, this.checked)">
+                                            <span>${escapeHtml(group.title)}</span>
+                                        </div>
+                                        <div class="assigned-group-meta">${group.items.length} PRs • ${selectedInGroup} selected</div>
+                                    </div>
+                                    <span class="group-caret">${expanded ? '▼' : '▶'}</span>
+                                </div>
+                                <div style="display:${expanded ? 'block' : 'none'};">
+                                    ${group.items.map((item) => {
+                                        const selected = wizardState.selected.has(item.url);
+                                        const title = item.branch || item.url;
+                                        return `
+                                            <div class="assigned-pr-row">
+                                                <input type="checkbox" ${selected ? 'checked' : ''} onchange="assignedToggleEntry(${JSON.stringify(item.url)}, this.checked)">
+                                                <div class="assigned-pr-main">
+                                                    <div class="assigned-pr-title">${escapeHtml(title)}</div>
+                                                    <div class="assigned-pr-url mono">${escapeHtml(item.url)}</div>
+                                                    ${item.detail ? `<div class="assigned-pr-detail">${escapeHtml(item.detail)}</div>` : ''}
+                                                </div>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        window.assignedToggleGroup = assignedToggleGroup;
+        window.assignedToggleEntry = assignedToggleEntry;
+        window.assignedToggleGroupSelection = assignedToggleGroupSelection;
+        window.assignedToggleAllVisible = assignedToggleAllVisible;
+
+        function renderAssignedWizard(data) {
+            const entries = Array.isArray(data && data.entries) ? data.entries : [];
+            const title = String(data && data.title ? data.title : 'Assigned PRs').trim();
+            const metadata = data && data.metadata && typeof data.metadata === 'object' ? data.metadata : {};
+            const total = Number(metadata.total || entries.length || 0);
+            const normalized = entries.map((entry) => ({
+                branch: String(entry && entry.branch ? entry.branch : '').trim(),
+                url: String(entry && entry.url ? entry.url : '').trim(),
+                detail: String(entry && entry.detail ? entry.detail : '').trim(),
+            })).filter((entry) => entry.url);
+            mergeWizardEntries(normalized, 'From assigned PRs');
+            wizardState.title = title || 'Assigned PRs';
+            wizardState.totalAssigned = total || wizardState.assigned.length;
+            wizardState.adding = false;
+
+            buildAssignedGroups(wizardState.assigned).forEach((group) => wizardState.expandedGroups.add(group.id));
+            renderAssignedWizardState();
+        }
+
+        async function loadAssignedWizard(showLoading = false) {
+            if (wizardState.fetching) return;
+            wizardState.fetching = true;
+            wizardLoadAssignedBtn.disabled = true;
+            if (showLoading) renderAssignedWizardLoading();
+            try {
+                const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'getAssignedPRs', params: {} });
+                if (!data) {
+                    renderAssignedWizardMessage('Unable to load assigned PRs.', true);
+                    setWizardStatus('Unable to load assigned PRs.', true);
+                    return;
+                }
+                if (data.error) {
+                    renderAssignedWizardMessage(data.error.message || 'Unable to load assigned PRs.', true);
+                    setWizardStatus(data.error.message || 'Unable to load assigned PRs.', true);
+                    return;
+                }
+                renderAssignedWizard(data.result || {});
+                setWizardStatus('Assigned PRs imported into the selection list.');
+            } finally {
+                wizardState.fetching = false;
+                wizardLoadAssignedBtn.disabled = false;
+            }
+        }
+
+        async function addSelectedAssignedTargets() {
+            if (wizardState.adding) return;
+            const urls = [...wizardState.selected].filter(Boolean);
+            if (!urls.length) return;
+            wizardState.adding = true;
+            renderAssignedWizardState();
+            const ok = await addAssignedTargets(urls);
+            wizardState.adding = false;
+            if (ok) {
+                const selectedSet = new Set(urls.map((url) => normalizeAssignedUrl(url)).filter(Boolean));
+                wizardState.assigned = wizardState.assigned.filter((entry) => !selectedSet.has(normalizeAssignedUrl(entry.url)));
+                wizardState.selected.clear();
+                setWizardStatus(`Added ${urls.length} PR${urls.length === 1 ? '' : 's'} to tracking.`);
+            } else {
+                setWizardStatus('Failed to add selected PRs. Please retry.', true);
+            }
+            renderAssignedWizardState();
+        }
+
+        function normalizeAggregateTitle(text) {
+            let title = String(text || '').trim();
+            if (!title) return '';
+            // Strip nested conventional-commit style prefixes.
+            for (let i = 0; i < 3; i += 1) {
+                const next = title.replace(/^[a-z]+(?:\([^)]*\))?!?:\s*/i, '').trim();
+                if (!next || next === title) break;
+                title = next;
+            }
+            // Drop common trailing branch suffixes from auto-generated backport titles.
+            title = title.replace(/\s*\(?(?:backport|release)[-/ ][\w./-]+\)?$/i, '').trim();
+            return title;
+        }
+
+        function trackerGroupKey(tracker) {
+            const base = normalizeAggregateTitle(tracker.pr_base_title || tracker.pr_title || '');
+            if (base) return base.toLowerCase();
+            return String(tracker.target || tracker.id || '').toLowerCase();
+        }
+
+        function _isRetrying(t) {
+            return String(t.last_action || '').startsWith('rerun-triggered:') &&
+                Array.isArray(t.jobs) && t.jobs.some(j => (j.status || '') !== 'completed');
+        }
+
+        function classifyTrackerState(t) {
+            if (_isRetrying(t)) return 'retrying';
+            const detail = String(t.last_detail || '').toLowerCase();
+            if (!detail || detail === 'unknown') return 'unknown';
+            if (/merged/.test(detail)) return 'merged';
+            if (/review required|label required/.test(detail)) return 'action';
+            if (/failed|error/.test(detail)) return 'action';
+            if (/pending|running|fetching/.test(detail)) return 'pending';
+            if (/closed/.test(detail)) return 'action';
+            if (/passed|success/.test(detail)) {
+                // Also check client-side review / label requirements
+                const cfg = repoConfigs[t.repo] || {};
+                const isBp = Boolean(t.is_backport);
+                const reqRev = Number(isBp ? cfg.backport_required_reviews : cfg.required_reviews) || 0;
+                const reqLbl = (isBp ? cfg.backport_required_labels : cfg.required_labels) || [];
+                if (reqRev > 0 && (Number(t.approvals) || 0) < reqRev) return 'action';
+                if (reqLbl.length > 0) {
+                    const present = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
+                    if (reqLbl.some(r => !present.some(p => p.includes(r.toLowerCase())))) return 'action';
+                }
+                return 'ready';
+            }
+            return 'pending';
+        }
+
+        function statusInfo(t) {
+            if (_isRetrying(t)) {
+                const used = t.attempts_used || 0;
+                const total = t.attempts_total || 0;
+                return { cls: 'retrying', label: total > 0 ? `Retrying ${used}\u200a/\u200a${total}` : 'Retrying' };
+            }
+            const detail = String(t.last_detail || '').toLowerCase().trim();
+            if (!detail || detail === 'unknown') return { cls: 'unknown', label: 'Checking' };
+            if (/merged/.test(detail))           return { cls: 'merged', label: 'Merged' };
+            if (/review required/.test(detail))  return { cls: 'needs-action', label: 'Review required' };
+            if (/label required/.test(detail))   return { cls: 'needs-action', label: 'Label required' };
+            if (/failed|error/.test(detail))     return { cls: 'failed', label: 'CI failed' };
+            if (/closed/.test(detail))           return { cls: 'closed', label: 'Closed' };
+            if (/in.progress|running|fetching/.test(detail)) return { cls: 'running', label: 'Running' };
+            if (/pending/.test(detail))          return { cls: 'pending', label: 'Pending' };
+            if (/passed|success|all pass/.test(detail)) {
+                const cfg = repoConfigs[t.repo] || {};
+                const isBp = Boolean(t.is_backport);
+                const reqRev = Number(isBp ? cfg.backport_required_reviews : cfg.required_reviews) || 0;
+                const reqLbl = (isBp ? cfg.backport_required_labels : cfg.required_labels) || [];
+                const approvals = Number(t.approvals) || 0;
+                if (reqRev > 0 && approvals < reqRev) {
+                    const needed = reqRev - approvals;
+                    return { cls: 'needs-action', label: `${needed} review${needed === 1 ? '' : 's'} needed` };
+                }
+                if (reqLbl.length > 0) {
+                    const present = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
+                    const missing = reqLbl.filter(r => !present.some(p => p.includes(r.toLowerCase())));
+                    if (missing.length > 0) return { cls: 'needs-action', label: `Label missing: ${missing.join(', ')}` };
+                }
+                return { cls: 'passing', label: 'Passing' };
+            }
+            return { cls: 'pending', label: 'Checking' };
+        }
+
+        function summarizeBackportGroup(items) {
+            const summary = { merged: 0, ready: 0, pending: 0, action: 0, unknown: 0 };
+            items.forEach((t) => {
+                const state = classifyTrackerState(t);
+                summary[state] += 1;
+            });
+            const chunks = [];
+            if (summary.merged > 0) chunks.push(`merged ${summary.merged}`);
+            if (summary.ready > 0) chunks.push(`ready ${summary.ready}`);
+            if (summary.pending > 0) chunks.push(`ci pending ${summary.pending}`);
+            if (summary.action > 0) chunks.push(`action needed ${summary.action}`);
+            if (summary.unknown > 0) chunks.push(`unknown ${summary.unknown}`);
+            return chunks.join(' • ') || 'unknown';
+        }
+
+        function getActionTypes(t) {
+            const detail = String(t.last_detail || '').toLowerCase();
+            const cfg = repoConfigs[t.repo] || {};
+            const isBp = Boolean(t.is_backport);
+            let ci = false, reviews = false, labels = false;
+            if (/failed|error/.test(detail)) ci = true;
+            if (/review required/.test(detail)) reviews = true;
+            if (/label required/.test(detail)) labels = true;
+            const reqRev = Number(isBp ? cfg.backport_required_reviews : cfg.required_reviews) || 0;
+            const reqLbl = (isBp ? cfg.backport_required_labels : cfg.required_labels) || [];
+            if (reqRev > 0 && (Number(t.approvals) || 0) < reqRev) reviews = true;
+            if (reqLbl.length > 0) {
+                const present = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
+                if (reqLbl.some(r => !present.some(p => p.includes(r.toLowerCase())))) labels = true;
+            }
+            return { ci, reviews, labels };
+        }
+
+        function groupStatusPills(items) {
+            const counts = { merged: 0, ready: 0, pending: 0, action: 0, unknown: 0, retrying: 0 };
+            const actionTypes = { ci: 0, reviews: 0, labels: 0, other: 0 };
+            items.forEach(t => {
+                const s = classifyTrackerState(t);
+                counts[s] = (counts[s] || 0) + 1;
+                if (s === 'action') {
+                    const types = getActionTypes(t);
+                    if (types.ci || types.reviews || types.labels) {
+                        if (types.ci) actionTypes.ci++;
+                        if (types.reviews) actionTypes.reviews++;
+                        if (types.labels) actionTypes.labels++;
+                    } else {
+                        actionTypes.other++;
+                    }
+                }
+            });
+            const pills = [];
+            const add = (cls, label, n) => {
+                if (n > 0) pills.push(`<span class="group-status-pill ${cls}">${n} ${label}</span>`);
+            };
+            add('status-retrying',     'retrying',      counts.retrying);
+            add('status-needs-action', 'CI failed',     actionTypes.ci);
+            add('status-needs-action', 'needs reviews', actionTypes.reviews);
+            add('status-needs-action', 'needs labels',  actionTypes.labels);
+            add('status-needs-action', 'action needed', actionTypes.other);
+            add('status-running',      'CI pending',    counts.pending);
+            add('status-passing',      'passing',       counts.ready);
+            add('status-merged',       'merged',        counts.merged);
+            add('status-unknown',      'unknown',       counts.unknown);
+            return pills.length ? `<div class="group-status-pills">${pills.join('')}</div>` : '';
+        }
+
+        function summarizeGroupStatus(items) {
+            const total = items.length;
+            const unknown = items.filter(t => String(t.last_detail || '').toLowerCase() === 'unknown').length;
+            const failed = items.filter(t => /failed/i.test(String(t.last_detail || ''))).length;
+            const pending = items.filter(t => /pending|running/i.test(String(t.last_detail || ''))).length;
+            const done = items.filter(t => /passed|success|merged/i.test(String(t.last_detail || ''))).length;
+            if (unknown === total) return 'unknown';
+            if (failed > 0) return `${failed} failed`;
+            if (pending > 0) return `${pending} pending`;
+            if (done === total) return 'all passing';
+            return `${total} tracked`;
+        }
+
+        function toggleGroup(groupId) {
+            if (expandedBackportGroups.has(groupId)) expandedBackportGroups.delete(groupId);
+            else expandedBackportGroups.add(groupId);
+            renderTrackersTree(trackerRows);
+        }
+        trackerTreeEl.addEventListener('click', function(e) {
+            // Group row expand/collapse — but not when clicking the checkbox or drag handle
+            const row = e.target.closest('.group-row');
+            if (row && !e.target.closest('.group-row-check') && !e.target.closest('.drag-handle')) {
+                const groupId = row.dataset.groupId;
+                if (groupId) toggleGroup(groupId);
+            }
+        });
+
+        trackerTreeEl.addEventListener('change', function(e) {
+            const cb = e.target.closest('.group-select-cb');
+            if (cb) {
+                const groupId = cb.dataset.groupId;
+                if (groupId) toggleGroupSelection(groupId, cb.checked);
+            }
+        });
+
+        window.toggleGroup = toggleGroup;
+
+        /* ── Drag-and-drop reorder ───────────────────────────────── */
+        {
+            let _dragSrcEl = null;
+            let _dragSrcRepo = null;
+
+            function _getDraggable(el) {
+                return el.closest('[data-tracker-ids]');
+            }
+
+            trackerTreeEl.addEventListener('dragstart', function(e) {
+                const draggable = _getDraggable(e.target);
+                if (!draggable) return;
+                _dragSrcEl = draggable;
+                _dragSrcRepo = draggable.closest('[data-repo]')?.dataset.repo ?? null;
+                draggable.classList.add('is-dragging');
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', draggable.dataset.trackerIds || '');
+            });
+
+            trackerTreeEl.addEventListener('dragend', function() {
+                trackerTreeEl.querySelectorAll('.is-dragging, .drag-over-before, .drag-over-after')
+                    .forEach(el => el.classList.remove('is-dragging', 'drag-over-before', 'drag-over-after'));
+                _dragSrcEl = null;
+                _dragSrcRepo = null;
+            });
+
+            trackerTreeEl.addEventListener('dragover', function(e) {
+                const draggable = _getDraggable(e.target);
+                if (!draggable || !_dragSrcEl || draggable === _dragSrcEl) return;
+                const repo = draggable.closest('[data-repo]')?.dataset.repo ?? null;
+                if (repo !== _dragSrcRepo) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                trackerTreeEl.querySelectorAll('.drag-over-before, .drag-over-after')
+                    .forEach(el => el.classList.remove('drag-over-before', 'drag-over-after'));
+                const rect = draggable.getBoundingClientRect();
+                if (e.clientY < rect.top + rect.height / 2)
+                    draggable.classList.add('drag-over-before');
+                else
+                    draggable.classList.add('drag-over-after');
+            });
+
+            trackerTreeEl.addEventListener('dragleave', function(e) {
+                const draggable = _getDraggable(e.target);
+                if (draggable) draggable.classList.remove('drag-over-before', 'drag-over-after');
+            });
+
+            trackerTreeEl.addEventListener('drop', async function(e) {
+                e.preventDefault();
+                const dropTarget = _getDraggable(e.target);
+                if (!dropTarget || !_dragSrcEl || dropTarget === _dragSrcEl) return;
+                const repo = dropTarget.closest('[data-repo]')?.dataset.repo ?? null;
+                if (repo !== _dragSrcRepo) return;
+
+                const insertBefore = dropTarget.classList.contains('drag-over-before');
+                dropTarget.classList.remove('drag-over-before', 'drag-over-after');
+                _dragSrcEl.classList.remove('is-dragging');
+
+                // Build the new order for top-level draggable items in this repo section
+                const repoCard = dropTarget.closest('[data-repo]');
+                const allTopLevel = [...repoCard.querySelectorAll(':scope > [data-tracker-ids]')];
+                const filtered = allTopLevel.filter(el => el !== _dragSrcEl);
+                const targetIdx = filtered.indexOf(dropTarget);
+                if (targetIdx === -1) return;
+                if (insertBefore) filtered.splice(targetIdx, 0, _dragSrcEl);
+                else filtered.splice(targetIdx + 1, 0, _dragSrcEl);
+
+                // Extract ordered IDs from the rearranged list
+                const repoReorderedIds = filtered.flatMap(el =>
+                    (el.dataset.trackerIds || '').split(',').map(Number).filter(Boolean)
+                );
+
+                // Build full order: keep other-repo trackers in their current positions
+                const repoIdSet = new Set(repoReorderedIds);
+                const fullOrder = [];
+                let inserted = false;
+                for (const t of trackerRows) {
+                    if (repoIdSet.has(t.id)) {
+                        if (!inserted) { fullOrder.push(...repoReorderedIds); inserted = true; }
+                    } else {
+                        fullOrder.push(t.id);
+                    }
+                }
+
+                await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerReorder', params: { ordered_ids: fullOrder } });
+                await refreshTrackersView();
+            });
+        }
+        /* ── End drag-and-drop ───────────────────────────────────── */
+
+        window.toggleGroupSelection = function(groupId, checked) {
+            // groupId is "repo::groupKey" — split on first "::" only
+            const sep = groupId.indexOf('::');
+            const repo = sep === -1 ? groupId : groupId.slice(0, sep);
+            const groupKey = sep === -1 ? '' : groupId.slice(sep + 2);
+            const repoList = trackerRows.filter(t => (t.repo || 'Unknown') === repo);
+            // rebuild groups for that repo to find items
+            const grouped = new Map();
+            repoList.forEach(t => {
+                const key = trackerGroupKey(t);
+                if (!grouped.has(key)) grouped.set(key, []);
+                grouped.get(key).push(t);
+            });
+            const items = grouped.get(groupKey) || [];
+            items.forEach(t => {
+                if (checked) selectedTrackers.add(t.id);
+                else selectedTrackers.delete(t.id);
+            });
+            renderTrackersTree(trackerRows);
+            renderBulkBar();
+        };
+
+        window.togglePassedJobs = function(id) {
+            if (expandedPassedJobs.has(id)) expandedPassedJobs.delete(id);
+            else expandedPassedJobs.add(id);
+            const tracker = trackerRows.find(t => t.id == id);
+            if (tracker) {
+                const card = document.getElementById(`pr-card-${id}`);
+                if (card) card.outerHTML = renderTrackerRow(tracker);
+            }
+        };
+
+        // Event delegation for job pill controls (avoids inline onclick with interpolated IDs)
+        trackerTreeEl.addEventListener('click', function(e) {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const id = Number(btn.dataset.trackerId);
+            const action = btn.dataset.action;
+            if (!id || !action) return;
+            e.stopPropagation();
+            if (action === 'expand-jobs')    expandedAllJobs.add(id);
+            if (action === 'collapse-jobs')  expandedAllJobs.delete(id);
+            if (action === 'toggle-passed') {
+                if (expandedPassedJobs.has(id)) expandedPassedJobs.delete(id);
+                else expandedPassedJobs.add(id);
+            }
+            if (action === 'toggle-section') {
+                const skey = `${id}:${btn.dataset.section}`;
+                if (toggledSections.has(skey)) toggledSections.delete(skey);
+                else toggledSections.add(skey);
+            }
+            const tracker = trackerRows.find(t => t.id == id);
+            if (tracker) {
+                const card = document.getElementById(`pr-card-${id}`);
+                if (card) card.outerHTML = renderTrackerRow(tracker);
+            }
+        }, true);
+
+        function syncRepoCheckbox(repo) {
+            const cb = document.querySelector(`.repo-select-all[data-repo="${CSS.escape(repo)}"]`);
+            if (!cb) return;
+            const list = trackerRows.filter(t => (t.repo || 'Unknown') === repo);
+            const selCount = list.filter(t => selectedTrackers.has(t.id)).length;
+            if (selCount === 0) { cb.checked = false; cb.indeterminate = false; }
+            else if (selCount === list.length) { cb.checked = true; cb.indeterminate = false; }
+            else { cb.checked = false; cb.indeterminate = true; }
+        }
+
+        window.toggleTrackerSelection = function(id, checked) {
+            if (checked) selectedTrackers.add(id);
+            else selectedTrackers.delete(id);
+            const card = document.getElementById(`pr-card-${id}`);
+            if (card) card.classList.toggle('pr-card-selected', checked);
+            const tracker = trackerRows.find(t => t.id == id);
+            if (tracker) syncRepoCheckbox(tracker.repo || 'Unknown');
+            renderBulkBar();
+        };
+
+        window.toggleRepoSelection = function(repo, checked) {
+            const list = trackerRows.filter(t => (t.repo || 'Unknown') === repo);
+            list.forEach(t => {
+                if (checked) selectedTrackers.add(t.id);
+                else selectedTrackers.delete(t.id);
+            });
+            renderTrackersTree(trackerRows);
+            renderBulkBar();
+        };
+
+        function renderBulkBar() {
+            const bar = document.getElementById('bulk-bar');
+            if (!bar) return;
+            const count = selectedTrackers.size;
+            if (count === 0) { bar.hidden = true; return; }
+            bar.hidden = false;
+            document.getElementById('bulk-count').textContent = `${count} selected`;
+        }
+
+        window.clearSelection = function() {
+            selectedTrackers.forEach(id => {
+                const card = document.getElementById(`pr-card-${id}`);
+                if (card) {
+                    card.classList.remove('pr-card-selected');
+                    const cb = card.querySelector('.pr-select-cb');
+                    if (cb) cb.checked = false;
+                }
+            });
+            // also uncheck repo-level checkboxes
+            document.querySelectorAll('.repo-select-all').forEach(cb => { cb.checked = false; cb.indeterminate = false; });
+            selectedTrackers.clear();
+            const retryPanel = document.getElementById('bulk-retry-panel');
+            if (retryPanel) retryPanel.hidden = true;
+            renderBulkBar();
+        };
+
+        window.toggleBulkRetryPanel = function() {
+            const panel = document.getElementById('bulk-retry-panel');
+            if (panel) panel.hidden = !panel.hidden;
+        };
+
+        window.bulkApplyRetries = async function() {
+            const ids = [...selectedTrackers];
+            if (!ids.length) return;
+            const attempts  = parseInt(document.getElementById('bulk-set-attempts')?.value ?? '3', 10);
+            const interval  = parseInt(document.getElementById('bulk-set-interval')?.value ?? '60', 10);
+            const autoRerun = document.getElementById('bulk-set-auto')?.checked ?? true;
+            for (const id of ids) {
+                await sendRpc({
+                    jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate',
+                    params: { tracker_id: id, attempts_total: attempts, interval_seconds: interval, auto_rerun: autoRerun },
+                });
+            }
+            showToast(`Retry settings applied to ${ids.length} PR${ids.length === 1 ? '' : 's'}`, 'success', 2500);
+            const panel = document.getElementById('bulk-retry-panel');
+            if (panel) panel.hidden = true;
+            await refreshTrackersView();
+        };
+
+        window.bulkAction = async function(action) {
+            const ids = [...selectedTrackers];
+            if (!ids.length) return;
+            if (action === 'remove') {
+                if (!confirm(`Remove tracking for ${ids.length} PR${ids.length === 1 ? '' : 's'}?\n\nThis cannot be undone.`)) return;
+                for (const id of ids)
+                    await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRemove', params: { tracker_id: id } });
+                selectedTrackers.clear();
+            } else if (action === 'refresh') {
+                for (const id of ids)
+                    await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: { tracker_id: id } });
+            } else if (action === 'pause' || action === 'resume') {
+                const active = action === 'resume';
+                for (const id of ids)
+                    await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerSetActive', params: { tracker_id: id, active } });
+            } else if (action === 'reset-retries') {
+                for (const id of ids)
+                    await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate', params: { tracker_id: id, reset_attempts: true } });
+                showToast(`Retry counter reset for ${ids.length} PR${ids.length === 1 ? '' : 's'}`, 'success', 2500);
+            }
+            await refreshTrackersView();
+            renderBulkBar();
+        };
+
+        const DRAG_HANDLE_SVG = `<svg viewBox="0 0 16 16" width="10" height="14" fill="currentColor" aria-hidden="true"><path d="M4 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2ZM4 8a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm0 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2ZM8 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2ZM8 8a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm0 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>`;
+
+        function renderTrackerRow(t, opts = {}) {
+            const isDraggable = opts.draggable !== false;
+            const info = statusInfo(t);
+            const isRetrying = _isRetrying(t);
+            const retriesExhausted = !isRetrying && (
+                t.retries_exhausted != null
+                    ? t.retries_exhausted
+                    : (t.attempts_used >= t.attempts_total && t.attempts_total > 0)
+            );
+            const isSelected = selectedTrackers.has(t.id);
+
+            // Build effective ignore set for this tracker (backport-aware)
+            const _isBpRow = Boolean(t.is_backport);
+            const _rowCfg = repoConfigs[t.repo] || {};
+            const _repoIgnoreList = _isBpRow ? (_rowCfg.backport_ignore_jobs || []) : (_rowCfg.ignore_jobs || []);
+            const effectiveIgnore = new Set([
+                ..._repoIgnoreList.map(x => x.toLowerCase().trim()).filter(Boolean),
+                ...(t.ignore_jobs || []).map(x => x.toLowerCase().trim()).filter(Boolean),
+            ]);
+            const checksHtml = buildChecksHtml(t, effectiveIgnore);
+
+            const backportChip = t.is_backport ? `
+                <span class="branch-chip" title="Backport target branch">
+                    <svg viewBox="0 0 16 16" width="11" height="11" style="fill:currentColor;flex-shrink:0" aria-hidden="true"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.492 2.492 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg>
+                    ${escapeHtml(t.backport_target || 'backport')}
+                </span>` : '';
+
+            return `
+                <div class="pr-card${isSelected ? ' pr-card-selected' : ''}" id="pr-card-${t.id}"${isDraggable ? ` draggable="true" data-tracker-ids="${t.id}"` : ''}>
+                    <div class="pr-card-main">
+                        ${isDraggable ? `<span class="drag-handle" title="Drag to reorder">${DRAG_HANDLE_SVG}</span>` : '<span class="drag-handle-spacer"></span>'}
+                        <label class="pr-select-label" title="Select for bulk action">
+                            <input type="checkbox" class="pr-select-cb" ${isSelected ? 'checked' : ''} onchange="toggleTrackerSelection(${t.id}, this.checked)">
+                        </label>
+                        <div>
+                            <div class="pr-card-top">
+                                <span class="pr-status-pill status-${info.cls}">${escapeHtml(info.label)}</span>
+                                ${!t.active ? '<span class="badge badge-paused">Paused</span>' : ''}
+                                <a href="${escapeHtml(t.target)}" target="_blank" rel="noopener noreferrer" class="pr-title">${escapeHtml(t.pr_title || t.target)}</a>
+                            </div>
+                            <div class="pr-card-meta">
+                                <span class="mono">#${t.pr_number || '?'}</span>
+                                ${backportChip}
+                                <span class="meta-sep">·</span>
+                                <span class="retry-indicator${isRetrying ? ' retry-active' : retriesExhausted ? ' retry-exhausted' : ''}" title="${t.attempts_used}/${t.attempts_total} retries used${isRetrying ? ' — rerun in progress' : ''} — click ✎ to edit">
+                                    <span class="retry-indicator-count">${t.attempts_used}/${t.attempts_total} retries</span>
+                                    <button class="inline-edit-btn" onclick="trackerToggleSettings(${t.id})" title="Edit settings" aria-label="Edit settings">
+                                        <svg viewBox="0 0 16 16" width="11" height="11" style="fill:currentColor" aria-hidden="true"><path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.253.253 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z"/></svg>
+                                    </button>
+                                </span>
+                                <span class="meta-sep">·</span>
+                                <span>${escapeHtml(formatAge(t.last_updated))}</span>
+                            </div>
+                            ${checksHtml}
+                        </div>
+                        <div class="pr-actions">
+                            <button class="secondary icon-btn" title="Sync now" aria-label="Sync" onclick="trackerAction('refresh', ${t.id})">
+                                <svg viewBox="0 0 16 16" width="14" height="14" style="fill:currentColor" aria-hidden="true"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>
+                            </button>
+                            <button class="secondary icon-btn" title="${t.active ? 'Pause tracking' : 'Resume tracking'}" aria-label="${t.active ? 'Pause' : 'Resume'}" onclick="trackerAction('toggle', ${t.id})">
+                                ${t.active
+                                    ? `<svg viewBox="0 0 16 16" width="14" height="14" style="fill:currentColor" aria-hidden="true"><path d="M4.75 2.5a.75.75 0 0 1 .75.75v9.5a.75.75 0 0 1-1.5 0v-9.5a.75.75 0 0 1 .75-.75Zm6.5 0a.75.75 0 0 1 .75.75v9.5a.75.75 0 0 1-1.5 0v-9.5a.75.75 0 0 1 .75-.75Z"/></svg>`
+                                    : `<svg viewBox="0 0 16 16" width="14" height="14" style="fill:currentColor" aria-hidden="true"><path d="M3 2.75A1.75 1.75 0 0 1 5.637 1.24l7.325 4.982a1.75 1.75 0 0 1 0 2.896L5.637 14.1A1.75 1.75 0 0 1 3 12.589V2.75Zm1.5 0v9.839a.25.25 0 0 0 .377.216l7.325-4.983a.25.25 0 0 0 0-.414L4.877 2.534a.25.25 0 0 0-.377.216Z"/></svg>`
+                                }
+                            </button>
+                        </div>
+                    </div>
+                    <div class="settings-panel" id="settings-${t.id}" hidden>
+                        <div class="settings-header">
+                            <span class="settings-title">
+                                <svg viewBox="0 0 16 16" width="12" height="12" style="fill:currentColor" aria-hidden="true"><path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.038.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.103-.303c-.066-.019-.176-.011-.299.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.103.303c.066.019.176.011.299-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.166.625 6.713.075 7.456.011 7.63.003 7.815 0 8 0Zm-.571 2.786A1 1 0 0 0 7 3.757v.429l-.002.043a4.004 4.004 0 0 0-1.06.435l-.004.003-.366-.212a1 1 0 0 0-1.364.364 5.929 5.929 0 0 0-.534.924 1 1 0 0 0 .364 1.364l.366.212.002.003a3.999 3.999 0 0 0 0 1.222l-.002.003-.366.212a1 1 0 0 0-.364 1.364c.161.329.352.639.534.924a1 1 0 0 0 1.364.364l.366-.212.004.003c.328.169.682.306 1.06.435l.002.043v.429a1 1 0 0 0 1.858.514 5.96 5.96 0 0 0 .534-.924 1 1 0 0 0-.364-1.364l-.366-.212-.002-.003a3.999 3.999 0 0 0 0-1.222l.002-.003.366-.212a1 1 0 0 0 .364-1.364 5.96 5.96 0 0 0-.534-.924 1 1 0 0 0-1.364-.364l-.366.212-.004-.003a4.004 4.004 0 0 0-1.06-.435L8.571 4.186v-.429a1 1 0 0 0-1.143-.971ZM8 6a2 2 0 1 1 0 4A2 2 0 0 1 8 6Z"/></svg>
+                                Retry settings
+                            </span>
+                            <button class="settings-close" onclick="trackerToggleSettings(${t.id})" aria-label="Close settings">&times;</button>
+                        </div>
+                        <div class="settings-grid">
+                            <div class="settings-field">
+                                <label for="set-attempts-${t.id}">Max retries</label>
+                                <input id="set-attempts-${t.id}" type="number" value="${t.attempts_total}" min="0" max="99" />
+                            </div>
+                            <div class="settings-field">
+                                <label for="set-interval-${t.id}">Interval (s)</label>
+                                <input id="set-interval-${t.id}" type="number" value="${t.interval_seconds}" min="5" />
+                            </div>
+                            <div class="settings-field settings-field-check">
+                                <input id="set-auto-${t.id}" type="checkbox" ${t.auto_rerun ? 'checked' : ''} />
+                                <label for="set-auto-${t.id}">Auto-rerun failed CI</label>
+                            </div>
+                        </div>
+                        <div class="settings-actions">
+                            <button class="primary btn-sm" onclick="trackerSaveSettings(${t.id})">Save</button>
+                            <button class="secondary btn-sm" onclick="trackerToggleSettings(${t.id})">Cancel</button>
+                            <button class="btn-reset-retries" title="Reset retry counter so auto-rerun can trigger again" onclick="trackerResetRetries(${t.id})">
+                                <svg viewBox="0 0 16 16" width="11" height="11" style="fill:currentColor" aria-hidden="true"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>
+                                Reset counter (${t.attempts_used}/${t.attempts_total} used)
+                            </button>
+                        </div>
+                        <div class="settings-danger">
+                            <button class="btn-danger-outline" onclick="trackerAction('remove', ${t.id})">
+                                <svg viewBox="0 0 16 16" width="13" height="13" style="fill:currentColor" aria-hidden="true"><path d="M6.5 1.75a.75.75 0 0 0-.75.75V3h-2a.75.75 0 0 0 0 1.5h.433l.667 8.36A1.75 1.75 0 0 0 6.594 14.5h2.812a1.75 1.75 0 0 0 1.744-1.64l.667-8.36h.433a.75.75 0 0 0 0-1.5h-2v-.5a.75.75 0 0 0-.75-.75h-3Zm2.25 1.25v.5h-1.5V3h1.5Zm-2.827 1.5h4.154l-.642 8.048a.25.25 0 0 1-.249.234H6.594a.25.25 0 0 1-.249-.234L5.923 4.5Zm1.077 1.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V7a.75.75 0 0 1 .75-.75Zm3 0a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V7a.75.75 0 0 1 .75-.75Z"/></svg>
+                                Remove tracker
+                            </button>
+                            <span class="settings-danger-hint">Stops monitoring and removes all data for this PR.</span>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        function renderTrackersTree(trackers) {
+            trackerRows = trackers || [];
+            trackerSummaryEl.textContent = trackerRows.length ? `${trackerRows.length} PRs tracked • Auto-refreshing` : 'No trackers active.';
+            
+            if (!trackerRows.length) {
+                trackerTreeEl.innerHTML = `<div class="empty-state"><h3>No active trackers</h3><p>Track a PR to monitor CI status and auto-rerun failed jobs.</p></div>`;
+                return;
+            }
+
+            const byRepo = new Map();
+            trackerRows.forEach(t => {
+                const repo = t.repo || 'Unknown';
+                if (!byRepo.has(repo)) byRepo.set(repo, []);
+                byRepo.get(repo).push(t);
+            });
+
+            const validGroupIds = new Set();
+
+            trackerTreeEl.innerHTML = [...byRepo.entries()].map(([repo, list]) => {
+                const selCount = list.filter(t => selectedTrackers.has(t.id)).length;
+                const repoAllSelected = selCount > 0 && selCount === list.length;
+                const repoIndeterminate = selCount > 0 && selCount < list.length;
+                return `
+                <div class="repo-card" data-repo="${escapeHtml(repo)}">
+                    <div class="repo-header">
+                        <span style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" class="repo-select-all" data-repo="${escapeHtml(repo)}" title="Select all PRs in this repository"${repoAllSelected ? ' checked' : ''}${repoIndeterminate ? ' data-indeterminate="1"' : ''} onclick="event.stopPropagation()" onchange="toggleRepoSelection(this.dataset.repo, this.checked)">
+                            <span>${escapeHtml(repo)}</span>
+                        </span>
+                        <span style="display:flex;align-items:center;gap:10px;">
+                            <span style="color:var(--muted); font-weight:normal;">${list.length} tracked</span>
+                            <button class="secondary" style="font-size:11px;padding:3px 9px;" data-repo="${escapeHtml(repo)}" onclick="openRepoConfigModal(this.dataset.repo)">Config…</button>
+                        </span>
+                    </div>
+                    ${(() => {
+                        const grouped = new Map();
+                        list.forEach(t => {
+                            const key = trackerGroupKey(t);
+                            if (!grouped.has(key)) {
+                                const title = normalizeAggregateTitle(t.pr_base_title || t.pr_title || '') || (t.pr_title || t.target || 'Unknown PR');
+                                grouped.set(key, { key, title, items: [] });
+                            }
+                            grouped.get(key).items.push(t);
+                        });
+
+                        const groups = [...grouped.values()];
+                        return groups.map(group => {
+                            const items = group.items.slice().sort((a, b) => Number(a.pr_number || 0) - Number(b.pr_number || 0));
+                            if (items.length <= 1) return renderTrackerRow(items[0]);
+
+                            const groupId = `${repo}::${group.key}`;
+                            validGroupIds.add(groupId);
+                            const isExpanded = expandedBackportGroups.has(groupId);
+
+                            const branches = [...new Set(items
+                                .filter(t => t.is_backport)
+                                .map(t => String(t.backport_target || '').trim())
+                                .filter(Boolean))
+                            ];
+                            const summaryText = summarizeBackportGroup(items);
+                            const groupAllSelected = items.length > 0 && items.every(t => selectedTrackers.has(t.id));
+                            const groupTrackerIds = items.map(t => t.id).join(',');
+                            return `
+                                <div class="group-shell is-backport" draggable="true" data-tracker-ids="${escapeHtml(groupTrackerIds)}">
+                                    <div class="group-row" data-group-id="${escapeHtml(groupId)}">
+                                        <span class="drag-handle" title="Drag to reorder">${DRAG_HANDLE_SVG}</span>
+                                        <label class="group-row-check" title="Select all PRs in this group">
+                                            <input type="checkbox" class="group-select-cb" data-group-id="${escapeHtml(groupId)}" ${groupAllSelected ? 'checked' : ''}>
+                                        </label>
+                                        <div>
+                                            <div class="group-head-left">
+                                                <svg class="backport-icon" viewBox="0 0 16 16" width="15" height="15" style="fill:currentColor" aria-hidden="true"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.492 2.492 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg>
+                                                <div>
+                                                    <div class="group-title">${escapeHtml(group.title)}</div>
+                                                    <div class="group-subtitle">${items.length} backport PRs</div>
+                                                    ${groupStatusPills(items)}
+                                                    ${branches.length > 0 ? `<div class="group-branches-row">${branches.map(b => `<span class="branch-chip">${escapeHtml(b)}</span>`).join('')}</div>` : ''}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <span class="group-caret">${isExpanded ? '▼' : '▶'}</span>
+                                    </div>
+                                    <div style="display:${isExpanded ? 'block' : 'none'};">
+                                        ${items.map(t => renderTrackerRow(t, { draggable: false })).join('')}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    })()}
+                </div>
+            `;
+            }).join('');
+
+            // <input> doesn't accept `indeterminate` as an HTML attribute — set it imperatively.
+            trackerTreeEl.querySelectorAll('.repo-select-all[data-indeterminate="1"]').forEach(cb => {
+                cb.indeterminate = true;
+            });
+
+            [...expandedBackportGroups].forEach((groupId) => {
+                if (!validGroupIds.has(groupId)) expandedBackportGroups.delete(groupId);
+            });
+        }
+
+        async function trackerAction(action, id) {
+            if (action === 'refresh') await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: { tracker_id: id } });
+            if (action === 'toggle') {
+                const cur = trackerRows.find(x => x.id == id);
+                await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerSetActive', params: { tracker_id: id, active: !cur.active } });
+            }
+            if (action === 'remove') {
+                const cur = trackerRows.find(x => x.id == id);
+                const label = cur ? (cur.pr_title || cur.target || `tracker #${id}`) : `tracker #${id}`;
+                if (confirm(`Remove tracking for:\n\n${label}\n\nThis cannot be undone.`))
+                    await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRemove', params: { tracker_id: id } });
+            }
+            refreshTrackersView();
+        }
+
+        function trackerToggleSettings(id) {
+            const panel = document.getElementById(`settings-${id}`);
+            if (panel) panel.hidden = !panel.hidden;
+        }
+        window.trackerToggleSettings = trackerToggleSettings;
+
+        async function trackerSaveSettings(id) {
+            const attempts  = parseInt(document.getElementById(`set-attempts-${id}`)?.value ?? '2', 10);
+            const interval  = parseInt(document.getElementById(`set-interval-${id}`)?.value ?? '60', 10);
+            const autoRerun = document.getElementById(`set-auto-${id}`)?.checked ?? true;
+            const data = await sendRpc({
+                jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate',
+                params: { tracker_id: id, attempts_total: attempts, interval_seconds: interval, auto_rerun: autoRerun },
+            });
+            if (data && !data.error) {
+                showToast('Settings saved', 'success', 2000);
+                await refreshTrackersView();
+            } else {
+                showToast(data?.error?.message || 'Failed to save settings', 'error');
+            }
+        }
+        window.trackerSaveSettings = trackerSaveSettings;
+
+        async function trackerResetRetries(id) {
+            const data = await sendRpc({
+                jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate',
+                params: { tracker_id: id, reset_attempts: true },
+            });
+            if (data && !data.error) {
+                showToast('Retry counter reset — auto-rerun will trigger on next CI failure', 'success', 3000);
+                await refreshTrackersView();
+            } else {
+                showToast(data?.error?.message || 'Failed to reset retries', 'error');
+            }
+        }
+        window.trackerResetRetries = trackerResetRetries;
+
+        function repoToggleIgnoreEditor(repo) { openRepoConfigModal(repo); }
+        window.repoToggleIgnoreEditor = repoToggleIgnoreEditor;
+
+        async function repoSaveIgnore() {
+            const repo = _repoConfigActiveRepo;
+            if (!repo) return;
+            const ignoreJobs = (document.getElementById('repo-config-ignore')?.value ?? '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+            const requiredReviews = Math.max(0, parseInt(document.getElementById('repo-config-req-reviews')?.value ?? '0', 10) || 0);
+            const requiredLabels = (document.getElementById('repo-config-req-labels')?.value ?? '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+            const bpIgnoreJobs = (document.getElementById('repo-config-bp-ignore')?.value ?? '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+            const bpRequiredReviews = Math.max(0, parseInt(document.getElementById('repo-config-bp-req-reviews')?.value ?? '0', 10) || 0);
+            const bpRequiredLabels = (document.getElementById('repo-config-bp-req-labels')?.value ?? '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+            const data = await sendRpc({
+                jsonrpc: '2.0', id: nextId++, method: 'repoConfigSet',
+                params: {
+                    repo,
+                    ignore_jobs: ignoreJobs,
+                    required_reviews: requiredReviews,
+                    required_labels: requiredLabels,
+                    backport_ignore_jobs: bpIgnoreJobs,
+                    backport_required_reviews: bpRequiredReviews,
+                    backport_required_labels: bpRequiredLabels,
+                },
+            });
+            if (data && !data.error) {
+                repoConfigs[repo] = {
+                    ignore_jobs: ignoreJobs,
+                    required_reviews: requiredReviews,
+                    required_labels: requiredLabels,
+                    backport_ignore_jobs: bpIgnoreJobs,
+                    backport_required_reviews: bpRequiredReviews,
+                    backport_required_labels: bpRequiredLabels,
+                };
+                showToast(`Saved config for ${repo}`, 'success', 2000);
+                closeRepoConfigModal();
+            } else {
+                showToast(data?.error?.message || 'Failed to save', 'error');
+            }
+        }
+        window.repoSaveIgnore = repoSaveIgnore;
+
+        const _SVG_CHECK  = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.75.75 0 0 0-1.06-1.06L6.75 9.19 5.28 7.72a.75.75 0 0 0-1.06 1.06l2 2a.75.75 0 0 0 1.06 0l4.5-4.5Z"/></svg>`;
+        const _SVG_X      = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2.343 13.657A8 8 0 1 1 13.657 2.343 8 8 0 0 1 2.343 13.657ZM6.03 4.97a.75.75 0 0 0-1.06 1.06L6.94 8 4.97 9.97a.75.75 0 0 0 1.06 1.06L8 9.06l1.97 1.97a.75.75 0 0 0 1.06-1.06L9.06 8l1.97-1.97a.75.75 0 0 0-1.06-1.06L8 6.94 6.03 4.97Z"/></svg>`;
+        const _SVG_DOT    = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/></svg>`;
+        const _SVG_CLOCK  = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M1 8a7 7 0 1 1 14 0A7 7 0 0 1 1 8Zm7-6.5a.75.75 0 0 0-.75.75v4.5a.75.75 0 0 0 .22.53l1.75 1.75a.749.749 0 0 0 1.06-.02.749.749 0 0 0 .02-1.06L8.75 7.06V2.25A.75.75 0 0 0 8 1.5Z"/></svg>`;
+        const _SVG_SKIP   = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm9.78-2.22-5.5 5.5a.75.75 0 0 1-1.06-1.06l5.5-5.5a.75.75 0 0 1 1.06 1.06Z"/></svg>`;
+        const _SVG_REVIEW = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M1.5 2.75C1.5 1.784 2.284 1 3.25 1h8.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 11.75 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H3.25a1.75 1.75 0 0 1-1.75-1.75Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h1.5a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h2.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>`;
+        const _SVG_TAG    = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M1 7.775V2.75C1 1.784 1.784 1 2.75 1h5.025c.464 0 .91.184 1.238.513l6.25 6.25c.683.682.683 1.79 0 2.474l-5.025 5.025a1.75 1.75 0 0 1-2.474 0l-6.25-6.25A1.752 1.752 0 0 1 1 7.775Zm1.5 0c0 .066.026.13.073.177l6.25 6.25a.25.25 0 0 0 .354 0l5.025-5.025a.25.25 0 0 0 0-.354l-6.25-6.25a.25.25 0 0 0-.177-.073H2.75a.25.25 0 0 0-.25.25ZM6 5a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/></svg>`;
+
+        function buildChecksHtml(t, effectiveIgnore) {
+            const jobs = Array.isArray(t.jobs) ? t.jobs : [];
+            const cfg = repoConfigs[t.repo] || {};
+            const isBp = Boolean(t.is_backport);
+            const reqReviews = Number(isBp ? cfg.backport_required_reviews : cfg.required_reviews) || 0;
+            const reqLabels  = (isBp ? cfg.backport_required_labels : cfg.required_labels) || [];
+            const approvals  = Number(t.approvals) || 0;
+            const presentLabels = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
+
+            if (jobs.length === 0 && reqReviews === 0 && reqLabels.length === 0) return '';
+
+            const showingPassed = expandedPassedJobs.has(t.id);
+            const showingAll    = expandedAllJobs.has(t.id);
+            const CAP = 6;
+
+            // Classify each job row
+            const activeRows = [], passedRows = [];
+            const seenIgnoredNames = new Set();
+            for (const j of jobs) {
+                const conc      = (j.conclusion || j.status || '').toLowerCase();
+                const jName     = (j.name || '').toLowerCase().trim();
+                const failedList = Array.isArray(j.failed_jobs) ? j.failed_jobs.map(f => (f||'').toLowerCase().trim()).filter(Boolean) : [];
+                const isIgnored = effectiveIgnore.has(jName) || (failedList.length > 0 && failedList.every(f => effectiveIgnore.has(f)));
+                const isPassed  = /success|passed/.test(conc);
+                const isSkipped = /^skipped$/.test(conc);
+                const isCancelled = /cancelled|canceled/.test(conc);
+                const isRunning = /in_progress|running/.test(conc);
+                const isFailed  = /failure|failed|error/.test(conc);
+
+                // Deduplicate ignored failing runs with same workflow name
+                if (isIgnored && isFailed) {
+                    if (seenIgnoredNames.has(jName)) continue;
+                    seenIgnoredNames.add(jName);
+                }
+
+                let rowCls, icon;
+                let detail = '';
+                if (isIgnored && isFailed) {
+                    rowCls = 'check-row-skipped'; icon = _SVG_SKIP;
+                    detail = 'ignored';
+                } else if (isPassed) {
+                    rowCls = 'check-row-pass';    icon = _SVG_CHECK;
+                } else if (isFailed) {
+                    rowCls = 'check-row-fail';    icon = _SVG_X;
+                    if (j.failed_jobs && j.failed_jobs.length)
+                        detail = j.failed_jobs.slice(0, 3).join(', ') + (j.failed_jobs.length > 3 ? '…' : '');
+                } else if (isRunning) {
+                    rowCls = 'check-row-running'; icon = _SVG_DOT;
+                } else if (isSkipped || isCancelled) {
+                    rowCls = 'check-row-skipped'; icon = _SVG_SKIP;
+                } else {
+                    rowCls = 'check-row-pending'; icon = _SVG_CLOCK;
+                }
+
+                const ignoredClass = (isIgnored && isFailed) ? ' check-name-ignored' : '';
+                const nameHtml   = `<span class="check-name${ignoredClass}">${escapeHtml(j.name || 'workflow')}</span>`;
+                const detailHtml = detail ? `<span class="check-detail">${escapeHtml(detail)}</span>` : '';
+                const linkHtml   = j.url ? `<a href="${escapeHtml(j.url)}" target="_blank" rel="noopener noreferrer" class="check-link">Details →</a>` : '';
+                const row = `<div class="check-row ${rowCls}">${icon}${nameHtml}${detailHtml}${linkHtml}</div>`;
+
+                if (isPassed || isSkipped || isCancelled || (isIgnored && isFailed)) passedRows.push(row);
+                else activeRows.push(row);
+            }
+
+            // Helper: is a section expanded? Default flipped by toggledSections.
+            const isSectionExpanded = (name, defaultExpanded) => {
+                const key = `${t.id}:${name}`;
+                return toggledSections.has(key) ? !defaultExpanded : defaultExpanded;
+            };
+            const sectionBtn = (name, expanded, icon, summary, statusText) =>
+                `<button class="check-section-hdr" data-tracker-id="${t.id}" data-action="toggle-section" data-section="${name}">${icon}<span class="chk-arrow">${expanded ? '▾' : '▸'}</span><span class="chk-summary">${summary}</span>${statusText ? `<span class="chk-status">${statusText}</span>` : ''}</button>`;
+
+            const html = [];
+
+            // ── CI section
+            if (jobs.length > 0) {
+                const failCount    = activeRows.filter((_, i) => i < activeRows.length).length; // = activeRows.length
+                const ciDefaultExp = activeRows.length > 0; // expand by default if anything needs attention
+                const ciExpanded   = isSectionExpanded('ci', ciDefaultExp);
+
+                let ciStatus = '';
+                if (activeRows.length > 0) {
+                    ciStatus = `${activeRows.length} need${activeRows.length === 1 ? 's' : ''} attention`;
+                } else {
+                    ciStatus = `${passedRows.length} passing`;
+                }
+                html.push(sectionBtn('ci', ciExpanded, _SVG_CHECK, 'Checks', ciStatus));
+
+                if (ciExpanded) {
+                    // Active (failing / running / pending) first
+                    const visibleActive = showingAll ? activeRows : activeRows.slice(0, CAP);
+                    const hiddenActive  = activeRows.length - visibleActive.length;
+                    html.push(...visibleActive);
+                    if (hiddenActive > 0)
+                        html.push(`<button class="check-fold-btn" data-tracker-id="${t.id}" data-action="expand-jobs">▸ ${hiddenActive} more…</button>`);
+                    if (showingAll && activeRows.length > CAP)
+                        html.push(`<button class="check-fold-btn" data-tracker-id="${t.id}" data-action="collapse-jobs">▾ fewer</button>`);
+                    // Passed sub-group (folded by default) below active rows
+                    if (passedRows.length > 0) {
+                        if (showingPassed) {
+                            html.push(`<button class="check-fold-btn" data-tracker-id="${t.id}" data-action="toggle-passed">▾ ${passedRows.length} passed / skipped / ignored</button>`);
+                            html.push(...passedRows);
+                        } else {
+                            html.push(`<button class="check-fold-btn" data-tracker-id="${t.id}" data-action="toggle-passed">▸ ${passedRows.length} passed / skipped / ignored</button>`);
+                        }
+                    }
+                }
+            }
+
+            // ── Reviews section
+            if (reqReviews > 0) {
+                const reviewsMet    = approvals >= reqReviews;
+                const revExpanded   = isSectionExpanded('reviews', !reviewsMet);
+                const revStatus     = reviewsMet ? `${approvals} / ${reqReviews} ✓` : `${approvals} / ${reqReviews}, ${reqReviews - approvals} more needed`;
+                html.push(sectionBtn('reviews', revExpanded, _SVG_REVIEW, 'Reviews', revStatus));
+                if (revExpanded) {
+                    const needed = reqReviews - approvals;
+                    const detail = reviewsMet ? '' : `<span class="check-detail">${needed} more needed</span>`;
+                    const reviewLink = !reviewsMet && t.target
+                        ? `<a href="${escapeHtml(t.target)}/files" target="_blank" rel="noopener noreferrer" class="check-link">Review →</a>`
+                        : '';
+                    html.push(`<div class="check-row ${reviewsMet ? 'check-row-pass' : 'check-row-fail'}">${reviewsMet ? _SVG_CHECK : _SVG_X}<span class="check-name">${approvals} / ${reqReviews} approvals</span>${detail}${reviewLink}</div>`);
+                }
+            }
+
+            // ── Labels section
+            if (reqLabels.length > 0) {
+                const missingLabels = reqLabels.filter(req => !presentLabels.some(p => p.includes(req.toLowerCase())));
+                const lblExpanded   = isSectionExpanded('labels', missingLabels.length > 0);
+                const lblStatus     = missingLabels.length === 0 ? 'all present ✓' : `${missingLabels.length} missing`;
+                html.push(sectionBtn('labels', lblExpanded, _SVG_TAG, 'Labels', lblStatus));
+                if (lblExpanded) {
+                    for (const req of reqLabels) {
+                        const met        = presentLabels.some(p => p.includes(req.toLowerCase()));
+                        const detailHtml = !met ? `<span class="check-detail">missing</span>` : '';
+                        html.push(`<div class="check-row ${met ? 'check-row-pass' : 'check-row-fail'}">${met ? _SVG_CHECK : _SVG_X}<span class="check-name">${escapeHtml(req)}</span>${detailHtml}</div>`);
+                    }
+                }
+            }
+
+            return html.length ? `<div class="pr-checks">${html.join('')}</div>` : '';
+        }
+
+        function getIgnoredFailingJobNames(t) {
+            const cfg = repoConfigs[t.repo] || {};
+            const isBackport = Boolean(t.is_backport);
+            const repoIgnoreList = isBackport
+                ? (cfg.backport_ignore_jobs || [])
+                : (cfg.ignore_jobs || []);
+            const effectiveIgnore = new Set([
+                ...repoIgnoreList.map(x => x.toLowerCase().trim()).filter(Boolean),
+                ...(t.ignore_jobs || []).map(x => x.toLowerCase().trim()).filter(Boolean),
+            ]);
+            if (effectiveIgnore.size === 0) return [];
+            const jobs = Array.isArray(t.jobs) ? t.jobs : [];
+            const ignoredNames = new Set();
+            jobs.forEach(j => {
+                const conc = (j.conclusion || j.status || '').toLowerCase();
+                if (!/failure|failed|error/.test(conc)) return;
+                const name = (j.name || '').toLowerCase().trim();
+                const failedList = Array.isArray(j.failed_jobs)
+                    ? j.failed_jobs.map(f => (f || '').toLowerCase().trim()).filter(Boolean)
+                    : [];
+                if (effectiveIgnore.has(name)) {
+                    ignoredNames.add(j.name || name);
+                } else if (failedList.length > 0 && failedList.every(f => effectiveIgnore.has(f))) {
+                    failedList.filter(f => effectiveIgnore.has(f)).forEach(f => ignoredNames.add(f));
+                }
+            });
+            return [...ignoredNames];
+        }
+
+        function getReportLineStatus(t) {
+            const detail = String(t.last_detail || '').toLowerCase();
+            if (/merged/.test(detail))  return 'Merged';
+            if (/closed/.test(detail))  return 'Closed';
+
+            const blockers = [];
+
+            // CI status
+            const ignoredJobs = getIgnoredFailingJobNames(t);
+            if (/failed|error/.test(detail)) {
+                const suffix = ignoredJobs.length > 0 ? ` (ignored: ${ignoredJobs.join(', ')})` : '';
+                blockers.push(`CI failed${suffix}`);
+            } else if (/pending|running|fetching/.test(detail)) {
+                blockers.push('CI pending');
+            }
+
+            // Review and label requirements — pick backport vs regular config
+            const cfg = repoConfigs[t.repo] || {};
+            const isBackport = Boolean(t.is_backport);
+            const reqReviews = Number(isBackport ? cfg.backport_required_reviews : cfg.required_reviews) || 0;
+            const reqLabels = Array.isArray(isBackport ? cfg.backport_required_labels : cfg.required_labels)
+                ? (isBackport ? cfg.backport_required_labels : cfg.required_labels)
+                : [];
+
+            const approvals = Number(t.approvals) || 0;
+            if (reqReviews > 0 && approvals < reqReviews) {
+                const needed = reqReviews - approvals;
+                blockers.push(`${needed} review${needed === 1 ? '' : 's'} needed (${approvals}/${reqReviews})`);
+            }
+
+            if (reqLabels.length > 0) {
+                const presentLabels = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
+                const missing = reqLabels.filter(req => !presentLabels.some(p => p.includes(req.toLowerCase())));
+                if (missing.length > 0) {
+                    blockers.push(`labels missing: ${missing.join(', ')}`);
+                }
+            }
+
+            if (blockers.length === 0) {
+                if (/passed|success/.test(detail)) return 'Ready to merge';
+                return t.last_detail || 'Unknown';
+            }
+            return blockers.join('; ');
+        }
+
+        function buildStatusReport(ids) {
+            const rows = ids && ids.size > 0
+                ? trackerRows.filter(t => ids.has(t.id))
+                : trackerRows;
+            const lines = [];
+            const now = new Date().toISOString().split('T')[0];
+            lines.push(`# PR Status Report — ${now}`);
+            lines.push('');
+
+            const byRepo = new Map();
+            rows.forEach(t => {
+                const repo = t.repo || 'Unknown';
+                if (!byRepo.has(repo)) byRepo.set(repo, []);
+                byRepo.get(repo).push(t);
+            });
+
+            for (const [repo, trackers] of byRepo) {
+                lines.push(`## ${repo} (${trackers.length} PR${trackers.length === 1 ? '' : 's'})`);
+                lines.push('');
+
+                const grouped = new Map();
+                trackers.forEach(t => {
+                    const key = trackerGroupKey(t);
+                    if (!grouped.has(key)) {
+                        const title = normalizeAggregateTitle(t.pr_base_title || t.pr_title || '') || (t.pr_title || t.target || 'Unknown PR');
+                        grouped.set(key, { key, title, items: [] });
+                    }
+                    grouped.get(key).items.push(t);
+                });
+
+                const groups = [...grouped.values()].sort((a, b) => a.title.localeCompare(b.title));
+                for (const group of groups) {
+                    const items = group.items.slice().sort((a, b) => Number(a.pr_number || 0) - Number(b.pr_number || 0));
+                    if (items.length > 1) {
+                        lines.push(`### ${group.title}`);
+                        lines.push('');
+                    }
+                    for (const t of items) {
+                        const label = t.backport_target ? t.backport_target : (t.pr_title || `#${t.pr_number}`);
+                        lines.push(`- [${label}](${t.target}) ${getReportLineStatus(t)}`);
+                    }
+                    lines.push('');
+                }
+            }
+
+            return lines.join('\n').trimEnd();
+        }
+
+        async function copyStatusReport() {
+            const ids = selectedTrackers.size > 0 ? selectedTrackers : null;
+            const rows = ids ? trackerRows.filter(t => ids.has(t.id)) : trackerRows;
+            if (!rows.length) { showToast('No tracked PRs to report.', 'info'); return; }
+            const text = buildStatusReport(ids);
+            try {
+                await navigator.clipboard.writeText(text);
+                const scope = ids ? `${ids.size} selected PR${ids.size === 1 ? '' : 's'}` : 'all PRs';
+                showToast(`Report for ${scope} copied to clipboard.`, 'success', 3000);
+            } catch {
+                showToast('Clipboard write failed — report logged to console.', 'error');
+                console.log(text);
+            }
+        }
+        window.copyStatusReport = copyStatusReport;
+
+        async function refreshTrackersView() {
+            const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerList', params: {} });
+            if (data && data.result) {
+                repoConfigs = data.result.repo_configs || {};
+                renderTrackersTree(data.result.trackers);
+                if (!wizardBackdropEl.hidden) renderAssignedWizardState();
+            }
+        }
+
+        // Modals
+        document.getElementById('trackerAdd').onclick = () => openAddTargetsModal(false);
+        wizardCancel1Btn.onclick = () => closeAssignedWizard();
+        wizardImportFromTextBtn.onclick = () => importTargetsFromText();
+        wizardLoadAssignedBtn.onclick = () => { void loadAssignedWizard(true); };
+        wizardAddSelectedBtn.onclick = () => { void addSelectedAssignedTargets(); };
+        authCloseBtn.onclick = () => closeAuthModal();
+        addTargetsCloseBtn.onclick = () => closeAddTargetsModal();
+        document.getElementById('trackerRefreshAll').onclick = async () => {
+            await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: {} });
+            refreshTrackersView();
+        };
+
+        // Initialize
+        window.addEventListener('keydown', e => { if (e.altKey && e.shiftKey && e.key === 'D') debugToolsEl.hidden = !debugToolsEl.hidden; });
+        refreshAuthStatus();
+        refreshTrackersView();
+        setInterval(refreshTrackersView, 10000);
+    
+    </script>
+</body>
+</html>

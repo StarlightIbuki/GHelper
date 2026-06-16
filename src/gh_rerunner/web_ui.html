@@ -1,0 +1,1094 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>gh-rerunner | PR Operations</title>
+    <style>
+        :root {
+            --bg: #f3f4f6;
+            --panel: #ffffff;
+            --text: #1f2328;
+            --muted: #656d76;
+            --accent: #2da44e;
+            --accent-hover: #2c974b;
+            --primary: #0969da;
+            --ok: #1a7f37;
+            --err: #cf222e;
+            --line: #d0d7de;
+            --shadow-sm: 0 1px 3px rgba(31,35,40,0.12);
+            --shadow-md: 0 4px 12px rgba(140, 149, 159, 0.15);
+            --shadow-lg: 0 20px 40px rgba(0,0,0,0.2);
+            --radius: 8px;
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            padding: 32px 16px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .page { width: min(1100px, 100%); margin: 0 auto; }
+
+        /* Header Area */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 24px;
+            padding: 20px 24px;
+            background: var(--panel);
+            border-radius: 12px;
+            box-shadow: var(--shadow-sm);
+            border: 1px solid var(--line);
+            flex-wrap: wrap;
+        }
+        .brand h1 { margin: 0; font-size: 1.25rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .auth-status { font-size: 13px; color: var(--muted); margin-top: 4px; display: flex; align-items: center; gap: 8px; }
+
+        /* Buttons */
+        button {
+            display: inline-flex;
+            align-items: center;
+            padding: 8px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            border: 1px solid rgba(31,35,40,0.15);
+            transition: all 0.2s ease;
+        }
+        button.primary { background: var(--accent); color: white; border: 1px solid transparent; }
+        button.primary:hover { background: var(--accent-hover); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+        button.secondary { background: #f6f8fa; color: var(--text); }
+        button.secondary:hover { background: #f3f4f6; border-color: #8c959f; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+
+        .icon-btn {
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            justify-content: center;
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--muted);
+        }
+        .icon-btn svg { width: 14px; height: 14px; fill: currentColor; }
+        .icon-btn:hover { background: var(--bg); color: var(--text); border-color: var(--line); transform: scale(1.05); }
+        .icon-btn-danger:hover { color: var(--err); background: #ffebe9; border-color: rgba(207, 34, 46, 0.4); }
+
+        /* Repo Card UI */
+        .repo-card {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            box-shadow: var(--shadow-sm);
+            margin-bottom: 24px;
+            overflow: hidden;
+            transition: box-shadow 0.2s ease;
+        }
+        .repo-card:hover {
+            box-shadow: var(--shadow-md);
+        }
+        .repo-header {
+            background: #fcfcfc;
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--line);
+            font-weight: 600;
+            font-size: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .pr-row {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--line);
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 16px;
+            align-items: center;
+            transition: background 0.15s ease;
+        }
+        .pr-row:hover { background: #fafbfc; }
+        .pr-row:last-child { border-bottom: none; }
+        .pr-title { font-weight: 600; font-size: 14px; color: var(--primary); text-decoration: none; word-break: break-word; }
+        .pr-title:hover { text-decoration: underline; }
+        .pr-meta { font-size: 12px; color: var(--muted); display: flex; gap: 12px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+
+        .group-shell { border-bottom: 1px solid var(--line); background: #fff; }
+        .group-toggle {
+            width: 100%;
+            border: 0;
+            border-bottom: 1px solid var(--line);
+            background: #fafbfc;
+            padding: 16px 20px;
+            text-align: left;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            border-radius: 0;
+            box-shadow: none;
+        }
+        .group-toggle:hover { background: #f3f4f6; transform: none; }
+        .group-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+        .group-title { color: var(--text); font-size: 15px; font-weight: 600; line-height: 1.3; }
+        .group-subtitle { color: var(--muted); font-size: 12px; margin-top: 4px; }
+        .group-branches { color: var(--muted); font-size: 12px; margin-top: 4px; }
+        .group-caret { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+        /* Badges */
+        .badge { padding: 3px 8px; font-size: 11px; font-weight: 600; border-radius: 12px; border: 1px solid transparent; letter-spacing: 0.3px; }
+        .badge-active { background: #ddf4ff; color: #0969da; border-color: rgba(84, 174, 255, 0.4); }
+        .badge-paused { background: #f6f8fa; color: #57606a; border-color: var(--line); }
+
+        /* Modal / Wizards */
+        .wizard-backdrop {
+            position: fixed; inset: 0; background: rgba(31, 35, 40, 0.5);
+            display: flex; align-items: flex-start; justify-content: center;
+            padding: 40px 16px; z-index: 100; backdrop-filter: blur(4px);
+            animation: fadeIn 0.2s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .wizard-window {
+            background: white; width: 100%; max-width: 800px; max-height: 80vh;
+            border-radius: 12px; box-shadow: var(--shadow-lg);
+            display: flex; flex-direction: column; overflow: hidden;
+            animation: slideDown 0.2s ease;
+        }
+        @keyframes slideDown { from { transform: translateY(-20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .wiz-header { padding: 18px 24px; border-bottom: 1px solid var(--line); background: #f8f9fa; }
+        .wiz-body { padding: 24px; overflow-y: auto; flex: 1; }
+        .wiz-footer { padding: 16px 24px; border-top: 1px solid var(--line); background: #f8f9fa; display: flex; justify-content: flex-end; gap: 12px; }
+
+        /* Assigned PRs UI */
+        .assigned-summary { font-size: 13px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .assigned-chip { background: #eaf5ff; color: #0550ae; border: 1px solid #b6e3ff; border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 600; }
+        .assigned-loading { height: 8px; border-radius: 999px; background: linear-gradient(90deg, #edf2f8 25%, #dce6f2 50%, #edf2f8 75%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; margin-bottom: 10px; }
+        .assigned-loading-row { height: 42px; border-radius: 8px; margin-bottom: 8px; background: linear-gradient(90deg, #f4f7fa 25%, #eaf0f6 50%, #f4f7fa 75%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+        @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+        .assigned-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+        .assigned-list { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+        .assigned-group-row { border-bottom: 1px solid var(--line); }
+        .assigned-group-row:last-child { border-bottom: none; }
+        .assigned-group-header { padding: 12px 16px; background: #fcfcfc; cursor: pointer; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: flex-start; }
+        .assigned-group-title { font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
+        .assigned-group-meta { margin-top: 4px; font-size: 11px; color: var(--muted); }
+        .assigned-pr-row { display: grid; grid-template-columns: auto 1fr; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); align-items: start; }
+        .assigned-pr-row:first-child { border-top: none; }
+        .assigned-pr-main { min-width: 0; }
+        .assigned-pr-title { font-size: 13px; font-weight: 600; }
+        .assigned-pr-url { font-size: 12px; color: var(--muted); margin-top: 3px; word-break: break-all; }
+        .assigned-pr-detail { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+        .import-panel { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin-bottom: 16px; align-items: start; }
+        .import-panel textarea { width: 100%; min-height: 100px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; resize: vertical; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02); transition: border-color 0.2s; }
+        .import-panel textarea:focus { outline: none; border-color: var(--primary); }
+        .import-actions { display: flex; flex-direction: column; gap: 10px; min-width: 190px; }
+        .import-settings { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin-bottom: 16px; }
+        .import-settings label { font-size: 12px; font-weight: 600; color: var(--text); display: block; margin-bottom: 6px; }
+        .import-settings input[type="number"] { width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+        .import-status { font-size: 13px; color: var(--muted); margin-bottom: 12px; min-height: 18px; }
+
+        .auth-shell { width: 100%; max-width: 520px; }
+        .auth-frame { width: 100%; height: min(78vh, 760px); border: 0; display: block; background: #fff; }
+
+        /* Toast notifications */
+        #toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+            pointer-events: all;
+            animation: toast-in 0.2s ease;
+            max-width: 380px;
+        }
+        @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .toast.toast-error { background: #ffebe9; color: #cf222e; border: 1px solid rgba(207,34,46,0.3); }
+        .toast.toast-success { background: #dafbe1; color: #1a7f37; border: 1px solid rgba(26,127,55,0.3); }
+        .toast.toast-info { background: #fff; color: var(--text); border: 1px solid var(--line); }
+        .toast-close { margin-left: auto; background: none; border: none; cursor: pointer; padding: 0 2px; color: inherit; opacity: 0.6; font-size: 15px; line-height: 1; }
+        .toast-close:hover { opacity: 1; transform: none; box-shadow: none; }
+
+        /* Toast notifications */
+        #toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+            pointer-events: all;
+            animation: toast-in 0.2s ease;
+            max-width: 380px;
+        }
+        @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .toast.toast-error { background: #ffebe9; color: #cf222e; border: 1px solid rgba(207,34,46,0.3); }
+        .toast.toast-success { background: #dafbe1; color: #1a7f37; border: 1px solid rgba(26,127,55,0.3); }
+        .toast.toast-info { background: #fff; color: var(--text); border: 1px solid var(--line); }
+        .toast-close { margin-left: auto; background: none; border: none; cursor: pointer; padding: 0 2px; color: inherit; opacity: 0.6; font-size: 15px; line-height: 1; }
+        .toast-close:hover { opacity: 1; transform: none; box-shadow: none; }
+
+        /* Utils */
+        .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+        .empty-state { text-align: center; padding: 60px 20px; color: var(--muted); border: 2px dashed var(--line); border-radius: 12px; background: #fafbfc; }
+        .empty-state h3 { margin-top: 0; color: var(--text); }
+        [hidden] { display: none !important; }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <header class="topbar">
+            <div class="brand">
+                <h1>
+                    <svg aria-hidden="true" height="20" viewBox="0 0 16 16" width="20" data-view-component="true" class="octicon" style="fill: var(--text);">
+                        <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm4.879-2.773 4.264 2.559a.25.25 0 0 1 0 .428l-4.264 2.559A.25.25 0 0 1 6 10.559V5.44a.25.25 0 0 1 .379-.213Z"></path>
+                    </svg>
+                    PR CI Rerunner
+                </h1>
+                <div class="auth-status">
+                    <span id="authStatus">Checking session...</span>
+                    <span>•</span>
+                    <span id="trackerSummary">No trackers active.</span>
+                </div>
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button id="trackerAdd" class="primary">
+                    <svg class="octicon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" style="margin-right: 6px; fill: currentColor;"><path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"></path></svg>
+                    Add Target
+                </button>
+                <button id="trackerRefreshAll" class="secondary">
+                    <svg class="octicon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" style="margin-right: 6px; fill: currentColor;"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"></path></svg>
+                    Sync All
+                </button>
+            </div>
+        </header>
+        <div id="trackerTree"></div>
+
+        <div id="debugTools" style="margin-top: 40px; opacity: 0.8;" hidden>
+            <h3 class="mono" style="font-size: 14px;">Debug Diagnostics</h3>
+            <pre id="response" class="mono" style="background: #24292e; color: #e6edf3; padding: 12px; border-radius: 6px; font-size: 11px; max-height: 200px; overflow: auto;"></pre>
+            <div id="console" style="display:none;"></div>
+        </div>
+    </div>
+
+    <div id="wizardBackdrop" class="wizard-backdrop" hidden>
+        <div class="wizard-window" style="max-width: 900px;">
+            <div class="wiz-header"><h3 style="margin:0;">Add Tracking Targets</h3></div>
+            <div class="wiz-body">
+                <div class="import-panel">
+                    <textarea id="wizardImportText" placeholder="Paste PR URLs, markdown links, or owner/repo#123 references"></textarea>
+                    <div class="import-actions">
+                        <button id="wizardImportFromText" class="secondary">Import From Text</button>
+                        <button id="wizardLoadAssigned" class="secondary">Get Assigned PRs</button>
+                    </div>
+                </div>
+                <div class="import-settings">
+                    <div>
+                        <label for="wizardAttempts">Retries</label>
+                        <input id="wizardAttempts" type="number" value="2" min="1" />
+                    </div>
+                    <div>
+                        <label for="wizardInterval">Interval (s)</label>
+                        <input id="wizardInterval" type="number" value="60" min="5" />
+                    </div>
+                    <div style="display:flex; align-items:flex-end; padding-bottom:1px;">
+                        <label style="font-size: 13px; font-weight: 500; margin: 0; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input id="wizardAuto" type="checkbox" checked style="margin:0; width:16px; height:16px;" /> Auto-rerun
+                        </label>
+                    </div>
+                </div>
+                <div id="wizardImportStatus" class="import-status"></div>
+                <div id="wizardAssignedSummary" class="assigned-summary"></div>
+                <div id="wizardAssignedBody"></div>
+            </div>
+            <div class="wiz-footer">
+                <button id="wizardAddSelected" class="primary" disabled>Add Selected (0)</button>
+                <button id="wizardCancel1" class="secondary">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="authBackdrop" class="wizard-backdrop" hidden>
+        <div class="wizard-window auth-shell">
+            <div class="wiz-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                <h3 style="margin:0;">Sign in</h3>
+                <button id="authCloseBtn" class="secondary">Close</button>
+            </div>
+            <iframe id="authFrame" class="auth-frame" title="Sign in to gh-rerunner" src="about:blank"></iframe>
+        </div>
+    </div>
+
+    <div id="addTargetsBackdrop" class="wizard-backdrop" hidden>
+        <div class="wizard-window" style="max-width: 980px; height: min(84vh, 920px);">
+            <div class="wiz-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                <h3 style="margin:0;">Add Tracking Targets</h3>
+                <button id="addTargetsCloseBtn" class="secondary">Close</button>
+            </div>
+            <iframe id="addTargetsFrame" class="auth-frame" title="Add tracking targets" src="about:blank"></iframe>
+        </div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script>
+
+        /* Logic for RPC and UI handling */
+        let nextId = 10;
+        const responseEl = document.getElementById('response');
+        const consoleEl = document.getElementById('console');
+        const debugToolsEl = document.getElementById('debugTools');
+        const wizardBackdropEl = document.getElementById('wizardBackdrop');
+        const trackerSummaryEl = document.getElementById('trackerSummary');
+        const trackerTreeEl = document.getElementById('trackerTree');
+
+        function showToast(message, type = 'info', durationMs = 4000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `<span>${escapeHtml(message)}</span><button class="toast-close" aria-label="Dismiss">&times;</button>`;
+            toast.querySelector('.toast-close').onclick = () => toast.remove();
+            container.appendChild(toast);
+            if (durationMs > 0) setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; setTimeout(() => toast.remove(), 300); }, durationMs);
+        }
+
+        function showToast(message, type = 'info', durationMs = 4000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `<span>${escapeHtml(message)}</span><button class="toast-close" aria-label="Dismiss">&times;</button>`;
+            toast.querySelector('.toast-close').onclick = () => toast.remove();
+            container.appendChild(toast);
+            if (durationMs > 0) setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; setTimeout(() => toast.remove(), 300); }, durationMs);
+        }
+        const wizardAssignedSummaryEl = document.getElementById('wizardAssignedSummary');
+        const wizardAssignedBodyEl = document.getElementById('wizardAssignedBody');
+        const wizardAddSelectedBtn = document.getElementById('wizardAddSelected');
+        const wizardImportTextEl = document.getElementById('wizardImportText');
+        const wizardImportFromTextBtn = document.getElementById('wizardImportFromText');
+        const wizardLoadAssignedBtn = document.getElementById('wizardLoadAssigned');
+        const wizardAttemptsEl = document.getElementById('wizardAttempts');
+        const wizardIntervalEl = document.getElementById('wizardInterval');
+        const wizardAutoEl = document.getElementById('wizardAuto');
+        const wizardImportStatusEl = document.getElementById('wizardImportStatus');
+        const authStatusEl = document.getElementById('authStatus');
+        const wizardCancel1Btn = document.getElementById('wizardCancel1');
+        const authBackdropEl = document.getElementById('authBackdrop');
+        const authCloseBtn = document.getElementById('authCloseBtn');
+        const authFrameEl = document.getElementById('authFrame');
+        const addTargetsBackdropEl = document.getElementById('addTargetsBackdrop');
+        const addTargetsCloseBtn = document.getElementById('addTargetsCloseBtn');
+        const addTargetsFrameEl = document.getElementById('addTargetsFrame');
+        
+        let trackerRows = [];
+        const expandedBackportGroups = new Set();
+        let debugVisible = false;
+        const wizardState = {
+            assigned: [],
+            title: 'Imported PRs',
+            fetching: false,
+            adding: false,
+            importingText: false,
+            totalAssigned: 0,
+            hiddenTracked: 0,
+            selected: new Set(),
+            expandedGroups: new Set(),
+        };
+
+        function escapeHtml(v) { return String(v || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[m])); }
+        function formatAge(ts) {
+            const n = Number(ts || 0); if (!n) return '-';
+            const diff = Math.max(0, Math.floor(Date.now() / 1000 - n));
+            if (diff < 60) return `${diff}s ago`;
+            if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+            return `${Math.floor(diff/3600)}h ago`;
+        }
+
+        async function sendRpc(payload) {
+            try {
+                const res = await fetch('/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const data = await res.json();
+                responseEl.textContent = JSON.stringify(data, null, 2);
+                return data;
+            } catch (err) { return null; }
+        }
+
+        async function refreshAuthStatus() {
+            try {
+                const res = await fetch('/auth/status');
+                const data = await res.json();
+                if (data && data.authenticated) {
+                    authStatusEl.innerHTML = `<strong>${escapeHtml(data.login)}</strong> <button class="secondary" style="padding:2px 8px; font-size:11px; margin-left:8px;" onclick="logoutAuth()">Logout</button>`;
+                } else {
+                    authStatusEl.innerHTML = `<button class="primary" style="padding:2px 8px; font-size:11px;" onclick="openAuthModal()">Login</button>`;
+                }
+            } catch (e) { authStatusEl.textContent = "Offline"; }
+        }
+
+        async function logoutAuth() {
+            try {
+                await fetch('/auth/logout', { method: 'POST' });
+            } finally {
+                closeAuthModal();
+                await refreshAuthStatus();
+            }
+        }
+
+        function openAuthModal() {
+            authBackdropEl.hidden = false;
+            authFrameEl.src = `/auth?embedded=1&_=${Date.now()}`;
+        }
+
+        function closeAuthModal() {
+            authBackdropEl.hidden = true;
+        }
+
+        function openAddTargetsModal(fetchAssigned = false) {
+            addTargetsBackdropEl.hidden = false;
+            addTargetsFrameEl.src = `/add-targets?embedded=1${fetchAssigned ? '&fetch_assigned=1' : ''}&_=${Date.now()}`;
+        }
+
+        function closeAddTargetsModal() {
+            addTargetsBackdropEl.hidden = true;
+        }
+
+        window.addEventListener('message', async (event) => {
+            if (event.origin !== window.location.origin) return;
+            const data = event.data || {};
+            if (data.type === 'gh-rerunner-auth-success') {
+                closeAuthModal();
+                await refreshAuthStatus();
+                // forward to add-targets iframe in case it triggered the login
+                if (addTargetsFrameEl.contentWindow) {
+                    addTargetsFrameEl.contentWindow.postMessage(data, window.location.origin);
+                }
+                return;
+            }
+            if (data.type === 'gh-rerunner-open-auth') {
+                openAuthModal();
+                return;
+            }
+            if (data.type === 'gh-rerunner-add-targets-close') {
+                closeAddTargetsModal();
+                return;
+            }
+            if (data.type === 'gh-rerunner-trackers-updated') {
+                await refreshTrackersView();
+            }
+        });
+
+        function openAssignedWizard(fetchAssigned = false) {
+            wizardState.selected.clear();
+            wizardState.expandedGroups.clear();
+            wizardBackdropEl.hidden = false;
+            wizardImportStatusEl.textContent = '';
+            if (!wizardState.assigned.length) renderAssignedWizardMessage('Paste text or load assigned PRs to build a selection list.');
+            else renderAssignedWizardState();
+            if (fetchAssigned) void loadAssignedWizard(true);
+        }
+
+        function closeAssignedWizard() {
+            wizardBackdropEl.hidden = true;
+        }
+
+        function setWizardStatus(text, isError = false) {
+            if (isError) {
+                showToast(text, 'error');
+                wizardImportStatusEl.textContent = '';
+            } else {
+                wizardImportStatusEl.style.color = 'var(--muted)';
+                wizardImportStatusEl.textContent = text || '';
+            }
+        }
+
+        function normalizeAssignedUrl(url) {
+            return String(url || '').trim().replace(/[?#].*$/, '').replace(/\/$/, '');
+        }
+
+        function extractRepoFromUrl(url) {
+            const match = String(url || '').trim().match(/^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+\/?$/i);
+            return match ? match[1] : '';
+        }
+
+        function getTrackedUrlSet() {
+            return new Set((trackerRows || []).map((row) => normalizeAssignedUrl(row.target)).filter(Boolean));
+        }
+
+        function renderAssignedWizardLoading() {
+            wizardAssignedSummaryEl.innerHTML = `<span class="assigned-chip">Fetching Assigned PRs</span>`;
+            wizardAssignedBodyEl.innerHTML = `
+                <div class="assigned-loading"></div>
+                <div class="assigned-loading-row"></div>
+                <div class="assigned-loading-row"></div>
+                <div class="assigned-loading-row"></div>
+            `;
+            wizardAddSelectedBtn.disabled = true;
+            wizardAddSelectedBtn.textContent = 'Add Selected (0)';
+        }
+
+        function renderAssignedWizardMessage(message, isError) {
+            if (isError) {
+                showToast(message, 'error');
+                wizardAssignedSummaryEl.innerHTML = '';
+                wizardAssignedBodyEl.innerHTML = '';
+                wizardAddSelectedBtn.disabled = true;
+                wizardAddSelectedBtn.textContent = 'Add Selected (0)';
+                return;
+            }
+            wizardAssignedSummaryEl.innerHTML = '<span class="assigned-chip">' + escapeHtml(message) + '</span>';
+            wizardAssignedBodyEl.innerHTML = '';
+            wizardAddSelectedBtn.disabled = true;
+            wizardAddSelectedBtn.textContent = 'Add Selected (0)';
+        }
+
+        function extractPrEntriesFromText(rawText) {
+            const text = String(rawText || '');
+            const entries = [];
+            const seen = new Set();
+            const pushUrl = (url, detail) => {
+                const normalized = normalizeAssignedUrl(url);
+                if (!normalized || seen.has(normalized)) return;
+                seen.add(normalized);
+                entries.push({ branch: '', url: normalized, detail });
+            };
+
+            const urlRegex = /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/gi;
+            let match;
+            while ((match = urlRegex.exec(text)) !== null) {
+                pushUrl(`https://github.com/${match[1]}/pull/${match[2]}`, 'Imported from pasted text');
+            }
+
+            const refRegex = /(^|\s|\()([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)\b/gm;
+            while ((match = refRegex.exec(text)) !== null) {
+                pushUrl(`https://github.com/${match[2]}/pull/${match[3]}`, 'Imported from pasted text');
+            }
+
+            return entries;
+        }
+
+        function mergeWizardEntries(newEntries, sourceLabel) {
+            const merged = new Map();
+            wizardState.assigned.forEach((entry) => {
+                const key = normalizeAssignedUrl(entry.url);
+                if (!key) return;
+                merged.set(key, {
+                    branch: String(entry.branch || '').trim(),
+                    url: key,
+                    detail: String(entry.detail || '').trim(),
+                });
+            });
+
+            newEntries.forEach((entry) => {
+                const key = normalizeAssignedUrl(entry.url);
+                if (!key) return;
+                const existing = merged.get(key);
+                const branch = String(entry.branch || '').trim();
+                const detail = String(entry.detail || '').trim();
+                if (existing) {
+                    if (!existing.branch && branch) existing.branch = branch;
+                    if ((!existing.detail || existing.detail === 'Imported from pasted text') && detail) existing.detail = detail;
+                    return;
+                }
+                merged.set(key, {
+                    branch,
+                    url: key,
+                    detail: detail || sourceLabel,
+                });
+            });
+
+            wizardState.assigned = [...merged.values()];
+        }
+
+        function importTargetsFromText() {
+            const entries = extractPrEntriesFromText(wizardImportTextEl.value);
+            if (!entries.length) {
+                setWizardStatus('No PR references detected. Paste GitHub PR URLs, markdown links, or owner/repo#123.', true);
+                return;
+            }
+            mergeWizardEntries(entries, 'Imported from pasted text');
+            buildAssignedGroups(wizardState.assigned).forEach((group) => wizardState.expandedGroups.add(group.id));
+            setWizardStatus(`Imported ${entries.length} PR${entries.length === 1 ? '' : 's'} from text.`);
+            wizardState.title = 'Imported PRs';
+            renderAssignedWizardState();
+        }
+
+        async function addAssignedTargets(urls) {
+            const uniqueUrls = [...new Set((urls || []).map(url => String(url || '').trim()).filter(Boolean))];
+            if (!uniqueUrls.length) return false;
+            const attempts = Math.max(1, Number(wizardAttemptsEl.value) || 2);
+            const intervalSeconds = Math.max(5, Number(wizardIntervalEl.value) || 60);
+            const data = await sendRpc({
+                jsonrpc: '2.0',
+                id: nextId++,
+                method: 'trackerAddTargets',
+                params: {
+                    targets_text: uniqueUrls.join('\n'),
+                    attempts,
+                    interval_seconds: intervalSeconds,
+                    auto_rerun: wizardAutoEl.checked,
+                    ignore_jobs: [],
+                },
+            });
+            if (!data || data.error) return false;
+            await refreshTrackersView();
+            return true;
+        }
+
+        function buildAssignedGroups(entries) {
+            const groups = new Map();
+            entries.forEach((entry, index) => {
+                const url = normalizeAssignedUrl(entry.url);
+                if (!url) return;
+                const repo = extractRepoFromUrl(url) || 'Other repositories';
+                const groupId = repo.toLowerCase();
+                if (!groups.has(groupId)) groups.set(groupId, { id: groupId, title: repo, items: [] });
+                groups.get(groupId).items.push({
+                    key: `${url}::${index}`,
+                    url,
+                    branch: String(entry.branch || '').trim(),
+                    detail: String(entry.detail || '').trim(),
+                });
+            });
+            return [...groups.values()]
+                .map((group) => ({ ...group, items: group.items.sort((a, b) => (a.branch || a.url).localeCompare(b.branch || b.url)) }))
+                .sort((a, b) => a.title.localeCompare(b.title));
+        }
+
+        function assignedToggleGroup(groupId) {
+            if (wizardState.expandedGroups.has(groupId)) wizardState.expandedGroups.delete(groupId);
+            else wizardState.expandedGroups.add(groupId);
+            renderAssignedWizardState();
+        }
+
+        function assignedToggleEntry(url, checked) {
+            if (checked) wizardState.selected.add(url);
+            else wizardState.selected.delete(url);
+            renderAssignedWizardState();
+        }
+
+        function assignedToggleGroupSelection(groupId, checked) {
+            const tracked = getTrackedUrlSet();
+            const groups = buildAssignedGroups(wizardState.assigned);
+            const group = groups.find((g) => g.id === groupId);
+            if (!group) return;
+            group.items.forEach((item) => {
+                if (tracked.has(item.url)) return;
+                if (checked) wizardState.selected.add(item.url);
+                else wizardState.selected.delete(item.url);
+            });
+            renderAssignedWizardState();
+        }
+
+        function assignedToggleAllVisible(checked) {
+            const tracked = getTrackedUrlSet();
+            const groups = buildAssignedGroups(wizardState.assigned);
+            groups.forEach((group) => {
+                group.items.forEach((item) => {
+                    if (tracked.has(item.url)) return;
+                    if (checked) wizardState.selected.add(item.url);
+                    else wizardState.selected.delete(item.url);
+                });
+            });
+            renderAssignedWizardState();
+        }
+
+        function renderAssignedWizardState() {
+            const tracked = getTrackedUrlSet();
+            const groups = buildAssignedGroups(wizardState.assigned).map((group) => ({
+                ...group,
+                items: group.items.filter((item) => !tracked.has(item.url)),
+            })).filter((group) => group.items.length > 0);
+
+            const visibleUrls = new Set(groups.flatMap((group) => group.items.map((item) => item.url)));
+            [...wizardState.selected].forEach((url) => {
+                if (!visibleUrls.has(url)) wizardState.selected.delete(url);
+            });
+
+            wizardState.hiddenTracked = wizardState.assigned.length - visibleUrls.size;
+            const selectedCount = wizardState.selected.size;
+            const availableCount = visibleUrls.size;
+            const allSelected = availableCount > 0 && selectedCount === availableCount;
+
+            wizardAssignedSummaryEl.innerHTML = `
+                <span class="assigned-chip">${escapeHtml(wizardState.title)} · ${availableCount} available</span>
+                <span class="assigned-chip">${selectedCount} selected</span>
+                ${wizardState.hiddenTracked > 0 ? `<span class="assigned-chip">${wizardState.hiddenTracked} already tracked</span>` : ''}
+            `;
+
+            wizardAddSelectedBtn.disabled = wizardState.adding || selectedCount === 0;
+            wizardAddSelectedBtn.textContent = wizardState.adding ? `Adding ${selectedCount}...` : `Add Selected (${selectedCount})`;
+
+            if (!groups.length) {
+                const emptyText = wizardState.hiddenTracked > 0
+                    ? 'All imported PRs are already tracked.'
+                    : 'Paste text or click Get Assigned PRs to build your list.';
+                wizardAssignedBodyEl.innerHTML = `<div style="padding: 16px; color: var(--muted); border: 1px solid var(--line); border-radius: 8px;">${escapeHtml(emptyText)}</div>`;
+                return;
+            }
+
+            wizardAssignedBodyEl.innerHTML = `
+                <div class="assigned-toolbar">
+                    <label>
+                        <input type="checkbox" ${allSelected ? 'checked' : ''} onchange="assignedToggleAllVisible(this.checked)">
+                        Select all visible
+                    </label>
+                </div>
+                <div class="assigned-list">
+                    ${groups.map((group) => {
+                        const groupUrls = group.items.map((item) => item.url);
+                        const selectedInGroup = groupUrls.filter((url) => wizardState.selected.has(url)).length;
+                        const groupAllSelected = groupUrls.length > 0 && selectedInGroup === groupUrls.length;
+                        const expanded = wizardState.expandedGroups.has(group.id);
+                        return `
+                            <div class="assigned-group-row">
+                                <div class="assigned-group-header" onclick="assignedToggleGroup(${JSON.stringify(group.id)})">
+                                    <div>
+                                        <div class="assigned-group-title">
+                                            <input type="checkbox" ${groupAllSelected ? 'checked' : ''} onclick="event.stopPropagation(); assignedToggleGroupSelection(${JSON.stringify(group.id)}, this.checked)">
+                                            <span>${escapeHtml(group.title)}</span>
+                                        </div>
+                                        <div class="assigned-group-meta">${group.items.length} PRs • ${selectedInGroup} selected</div>
+                                    </div>
+                                    <span class="group-caret">${expanded ? '▼' : '▶'}</span>
+                                </div>
+                                <div style="display:${expanded ? 'block' : 'none'};">
+                                    ${group.items.map((item) => {
+                                        const selected = wizardState.selected.has(item.url);
+                                        const title = item.branch || item.url;
+                                        return `
+                                            <div class="assigned-pr-row">
+                                                <input type="checkbox" ${selected ? 'checked' : ''} onchange="assignedToggleEntry(${JSON.stringify(item.url)}, this.checked)">
+                                                <div class="assigned-pr-main">
+                                                    <div class="assigned-pr-title">${escapeHtml(title)}</div>
+                                                    <div class="assigned-pr-url mono">${escapeHtml(item.url)}</div>
+                                                    ${item.detail ? `<div class="assigned-pr-detail">${escapeHtml(item.detail)}</div>` : ''}
+                                                </div>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        window.assignedToggleGroup = assignedToggleGroup;
+        window.assignedToggleEntry = assignedToggleEntry;
+        window.assignedToggleGroupSelection = assignedToggleGroupSelection;
+        window.assignedToggleAllVisible = assignedToggleAllVisible;
+
+        function renderAssignedWizard(data) {
+            const entries = Array.isArray(data && data.entries) ? data.entries : [];
+            const title = String(data && data.title ? data.title : 'Assigned PRs').trim();
+            const metadata = data && data.metadata && typeof data.metadata === 'object' ? data.metadata : {};
+            const total = Number(metadata.total || entries.length || 0);
+            const normalized = entries.map((entry) => ({
+                branch: String(entry && entry.branch ? entry.branch : '').trim(),
+                url: String(entry && entry.url ? entry.url : '').trim(),
+                detail: String(entry && entry.detail ? entry.detail : '').trim(),
+            })).filter((entry) => entry.url);
+            mergeWizardEntries(normalized, 'From assigned PRs');
+            wizardState.title = title || 'Assigned PRs';
+            wizardState.totalAssigned = total || wizardState.assigned.length;
+            wizardState.adding = false;
+
+            buildAssignedGroups(wizardState.assigned).forEach((group) => wizardState.expandedGroups.add(group.id));
+            renderAssignedWizardState();
+        }
+
+        async function loadAssignedWizard(showLoading = false) {
+            if (wizardState.fetching) return;
+            wizardState.fetching = true;
+            wizardLoadAssignedBtn.disabled = true;
+            if (showLoading) renderAssignedWizardLoading();
+            try {
+                const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'getAssignedPRs', params: {} });
+                if (!data) {
+                    renderAssignedWizardMessage('Unable to load assigned PRs.', true);
+                    setWizardStatus('Unable to load assigned PRs.', true);
+                    return;
+                }
+                if (data.error) {
+                    renderAssignedWizardMessage(data.error.message || 'Unable to load assigned PRs.', true);
+                    setWizardStatus(data.error.message || 'Unable to load assigned PRs.', true);
+                    return;
+                }
+                renderAssignedWizard(data.result || {});
+                setWizardStatus('Assigned PRs imported into the selection list.');
+            } finally {
+                wizardState.fetching = false;
+                wizardLoadAssignedBtn.disabled = false;
+            }
+        }
+
+        async function addSelectedAssignedTargets() {
+            if (wizardState.adding) return;
+            const urls = [...wizardState.selected].filter(Boolean);
+            if (!urls.length) return;
+            wizardState.adding = true;
+            renderAssignedWizardState();
+            const ok = await addAssignedTargets(urls);
+            wizardState.adding = false;
+            if (ok) {
+                const selectedSet = new Set(urls.map((url) => normalizeAssignedUrl(url)).filter(Boolean));
+                wizardState.assigned = wizardState.assigned.filter((entry) => !selectedSet.has(normalizeAssignedUrl(entry.url)));
+                wizardState.selected.clear();
+                setWizardStatus(`Added ${urls.length} PR${urls.length === 1 ? '' : 's'} to tracking.`);
+            } else {
+                setWizardStatus('Failed to add selected PRs. Please retry.', true);
+            }
+            renderAssignedWizardState();
+        }
+
+        function normalizeAggregateTitle(text) {
+            let title = String(text || '').trim();
+            if (!title) return '';
+            // Strip nested conventional-commit style prefixes.
+            for (let i = 0; i < 3; i += 1) {
+                const next = title.replace(/^[a-z]+(?:\([^)]*\))?!?:\s*/i, '').trim();
+                if (!next || next === title) break;
+                title = next;
+            }
+            // Drop common trailing branch suffixes from auto-generated backport titles.
+            title = title.replace(/\s*\(?(?:backport|release)[-/ ][\w./-]+\)?$/i, '').trim();
+            return title;
+        }
+
+        function trackerGroupKey(tracker) {
+            const base = normalizeAggregateTitle(tracker.pr_base_title || tracker.pr_title || '');
+            if (base) return base.toLowerCase();
+            return String(tracker.target || tracker.id || '').toLowerCase();
+        }
+
+        function classifyTrackerState(t) {
+            const detail = String(t.last_detail || '').toLowerCase();
+            if (!detail || detail === 'unknown') return 'unknown';
+            if (/merged/.test(detail)) return 'merged';
+            if (/review required|label required/.test(detail)) return 'action';
+            if (/failed|error/.test(detail)) return 'action';
+            if (/pending|running|fetching/.test(detail)) return 'pending';
+            if (/passed|success/.test(detail)) return 'ready';
+            if (/closed/.test(detail)) return 'action';
+            return 'pending';
+        }
+
+        function summarizeBackportGroup(items) {
+            const summary = { merged: 0, ready: 0, pending: 0, action: 0, unknown: 0 };
+            items.forEach((t) => {
+                const state = classifyTrackerState(t);
+                summary[state] += 1;
+            });
+            const chunks = [];
+            if (summary.merged > 0) chunks.push(`merged ${summary.merged}`);
+            if (summary.ready > 0) chunks.push(`ready ${summary.ready}`);
+            if (summary.pending > 0) chunks.push(`ci pending ${summary.pending}`);
+            if (summary.action > 0) chunks.push(`action needed ${summary.action}`);
+            if (summary.unknown > 0) chunks.push(`unknown ${summary.unknown}`);
+            return chunks.join(' • ') || 'unknown';
+        }
+
+        function summarizeGroupStatus(items) {
+            const total = items.length;
+            const unknown = items.filter(t => String(t.last_detail || '').toLowerCase() === 'unknown').length;
+            const failed = items.filter(t => /failed/i.test(String(t.last_detail || ''))).length;
+            const pending = items.filter(t => /pending|running/i.test(String(t.last_detail || ''))).length;
+            const done = items.filter(t => /passed|success|merged/i.test(String(t.last_detail || ''))).length;
+            if (unknown === total) return 'unknown';
+            if (failed > 0) return `${failed} failed`;
+            if (pending > 0) return `${pending} pending`;
+            if (done === total) return 'all passing';
+            return `${total} tracked`;
+        }
+
+        function toggleGroup(groupId) {
+            if (expandedBackportGroups.has(groupId)) expandedBackportGroups.delete(groupId);
+            else expandedBackportGroups.add(groupId);
+            renderTrackersTree(trackerRows);
+        }
+        window.toggleGroup = toggleGroup;
+
+        function renderTrackerRow(t) {
+            return `
+                <div class="pr-row">
+                    <div>
+                        <a href="${t.target}" target="_blank" class="pr-title">${escapeHtml(t.pr_title || t.target)}</a>
+                        <div class="pr-meta">
+                            <span class="badge ${t.active ? 'badge-active' : 'badge-paused'}">${t.active ? 'ACTIVE' : 'PAUSED'}</span>
+                            <span class="mono">#${t.pr_number || '?'}</span>
+                            ${t.is_backport ? `<span>•</span><span>${escapeHtml(t.backport_target || 'backport')}</span>` : ''}
+                            <span>•</span>
+                            <span>Retries: ${t.attempts_used}/${t.attempts_total}</span>
+                            <span>•</span>
+                            <span>${formatAge(t.last_updated)}</span>
+                        </div>
+                        <div style="font-size:11px; color:var(--muted); margin-top:4px;">Status: <span class="mono">${escapeHtml(t.last_detail || '-')}</span></div>
+                    </div>
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <button class="secondary icon-btn" title="Sync" aria-label="Sync" onclick="trackerAction('refresh', ${t.id})">
+                            <svg class="octicon octicon-sync" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                                <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"></path>
+                            </svg>
+                        </button>
+                        <button class="secondary icon-btn" title="${t.active ? 'Pause' : 'Resume'}" aria-label="${t.active ? 'Pause' : 'Resume'}" onclick="trackerAction('toggle', ${t.id})">
+                            ${t.active
+                                ? '<svg class="octicon octicon-pause" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4.75 2.5a.75.75 0 0 1 .75.75v9.5a.75.75 0 0 1-1.5 0v-9.5a.75.75 0 0 1 .75-.75Zm6.5 0a.75.75 0 0 1 .75.75v9.5a.75.75 0 0 1-1.5 0v-9.5a.75.75 0 0 1 .75-.75Z"></path></svg>'
+                                : '<svg class="octicon octicon-play" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3 2.75A1.75 1.75 0 0 1 5.637 1.24l7.325 4.982a1.75 1.75 0 0 1 0 2.896L5.637 14.1A1.75 1.75 0 0 1 3 12.589V2.75Zm1.5 0v9.839a.25.25 0 0 0 .377.216l7.325-4.983a.25.25 0 0 0 0-.414L4.877 2.534a.25.25 0 0 0-.377.216Z"></path></svg>'}
+                        </button>
+                        <button class="secondary icon-btn icon-btn-danger" title="Remove" aria-label="Remove" onclick="trackerAction('remove', ${t.id})">
+                            <svg class="octicon octicon-trash" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                                <path d="M6.5 1.75a.75.75 0 0 0-.75.75V3h-2a.75.75 0 0 0 0 1.5h.433l.667 8.36A1.75 1.75 0 0 0 6.594 14.5h2.812a1.75 1.75 0 0 0 1.744-1.64l.667-8.36h.433a.75.75 0 0 0 0-1.5h-2v-.5a.75.75 0 0 0-.75-.75h-3Zm2.25 1.25v.5h-1.5V3h1.5Zm-2.827 1.5h4.154l-.642 8.048a.25.25 0 0 1-.249.234H6.594a.25.25 0 0 1-.249-.234L5.923 4.5Zm1.077 1.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V7a.75.75 0 0 1 .75-.75Zm3 0a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V7a.75.75 0 0 1 .75-.75Z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderTrackersTree(trackers) {
+            trackerRows = trackers || [];
+            trackerSummaryEl.textContent = trackerRows.length ? `${trackerRows.length} PRs tracked • Auto-refreshing` : 'No trackers active.';
+            
+            if (!trackerRows.length) {
+                trackerTreeEl.innerHTML = `<div class="empty-state"><h3>No active trackers</h3><p>Track a PR to monitor CI status and auto-rerun failed jobs.</p></div>`;
+                return;
+            }
+
+            const byRepo = new Map();
+            trackerRows.forEach(t => {
+                const repo = t.repo || 'Unknown';
+                if (!byRepo.has(repo)) byRepo.set(repo, []);
+                byRepo.get(repo).push(t);
+            });
+
+            const validGroupIds = new Set();
+
+            trackerTreeEl.innerHTML = [...byRepo.entries()].map(([repo, list]) => `
+                <div class="repo-card">
+                    <div class="repo-header"><span>${escapeHtml(repo)}</span> <span style="color:var(--muted); font-weight:normal;">${list.length} tracked</span></div>
+                    ${(() => {
+                        const grouped = new Map();
+                        list.forEach(t => {
+                            const key = trackerGroupKey(t);
+                            if (!grouped.has(key)) {
+                                const title = normalizeAggregateTitle(t.pr_base_title || t.pr_title || '') || (t.pr_title || t.target || 'Unknown PR');
+                                grouped.set(key, { key, title, items: [] });
+                            }
+                            grouped.get(key).items.push(t);
+                        });
+
+                        const groups = [...grouped.values()].sort((a, b) => a.title.localeCompare(b.title));
+                        return groups.map(group => {
+                            const items = group.items.slice().sort((a, b) => Number(a.pr_number || 0) - Number(b.pr_number || 0));
+                            if (items.length <= 1) return renderTrackerRow(items[0]);
+
+                            const groupId = `${repo}::${group.key}`;
+                            validGroupIds.add(groupId);
+                            const isExpanded = expandedBackportGroups.has(groupId);
+
+                            const branches = [...new Set(items
+                                .filter(t => t.is_backport)
+                                .map(t => String(t.backport_target || '').trim())
+                                .filter(Boolean))
+                            ];
+                            const branchText = branches.length ? `branches: ${branches.join(', ')}` : 'branches: n/a';
+                            const summaryText = summarizeBackportGroup(items);
+                            return `
+                                <div class="group-shell">
+                                    <button type="button" class="group-toggle" onclick='toggleGroup(${JSON.stringify(groupId)})'>
+                                        <div class="group-head">
+                                            <div>
+                                                <div class="group-title">${escapeHtml(group.title)}</div>
+                                                <div class="group-subtitle">Single PR family • ${items.length} backport PRs • ${escapeHtml(summaryText)}</div>
+                                                <div class="group-branches">${escapeHtml(branchText)}</div>
+                                            </div>
+                                            <span class="group-caret">${isExpanded ? '▼' : '▶'}</span>
+                                        </div>
+                                    </button>
+                                    <div style="display:${isExpanded ? 'block' : 'none'};">
+                                        ${items.map(t => renderTrackerRow(t)).join('')}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    })()}
+                </div>
+            `).join('');
+
+            [...expandedBackportGroups].forEach((groupId) => {
+                if (!validGroupIds.has(groupId)) expandedBackportGroups.delete(groupId);
+            });
+        }
+
+        async function trackerAction(action, id) {
+            if (action === 'refresh') await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: { tracker_id: id } });
+            if (action === 'toggle') {
+                const cur = trackerRows.find(x => x.id == id);
+                await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerSetActive', params: { tracker_id: id, active: !cur.active } });
+            }
+            if (action === 'remove') { if(confirm('Remove this tracker?')) await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRemove', params: { tracker_id: id } }); }
+            refreshTrackersView();
+        }
+
+        async function refreshTrackersView() {
+            const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerList', params: {} });
+            if (data && data.result) {
+                renderTrackersTree(data.result.trackers);
+                if (!wizardBackdropEl.hidden) renderAssignedWizardState();
+            }
+        }
+
+        // Modals
+        document.getElementById('trackerAdd').onclick = () => openAddTargetsModal(false);
+        wizardCancel1Btn.onclick = () => closeAssignedWizard();
+        wizardImportFromTextBtn.onclick = () => importTargetsFromText();
+        wizardLoadAssignedBtn.onclick = () => { void loadAssignedWizard(true); };
+        wizardAddSelectedBtn.onclick = () => { void addSelectedAssignedTargets(); };
+        authCloseBtn.onclick = () => closeAuthModal();
+        addTargetsCloseBtn.onclick = () => closeAddTargetsModal();
+        document.getElementById('trackerRefreshAll').onclick = async () => {
+            await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: {} });
+            refreshTrackersView();
+        };
+
+        // Initialize
+        window.addEventListener('keydown', e => { if (e.altKey && e.shiftKey && e.key === 'D') debugToolsEl.hidden = !debugToolsEl.hidden; });
+        refreshAuthStatus();
+        refreshTrackersView();
+        setInterval(refreshTrackersView, 10000);
+    
+    </script>
+</body>
+</html>

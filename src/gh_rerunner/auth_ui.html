@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>gh-rerunner | Sign In</title>
+  <style>
+    :root {
+      --bg: #f6f8fa;
+      --panel: #ffffff;
+      --text: #1f2328;
+      --muted: #636c76;
+      --accent: #0969da;
+      --line: #d0d7de;
+      --ok: #1a7f37;
+      --err: #cf222e;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      padding: 20px;
+    }
+    .hero {
+      width: 100%;
+      max-width: 440px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: 0 8px 24px rgba(31,35,40,0.1);
+      padding: 40px;
+    }
+    h1 { margin: 0 0 8px; font-size: 1.5rem; text-align: center; }
+    .subtitle { color: var(--muted); text-align: center; font-size: 14px; margin-bottom: 30px; }
+
+    /* Method Selection */
+    .option-card {
+      padding: 16px;
+      border: 2px solid var(--line);
+      border-radius: 12px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+    .option-card:hover { border-color: var(--accent); background: #f0f7ff; }
+    .option-card.selected { border-color: var(--accent); background: #f0f7ff; }
+    .option-card strong { display: block; font-size: 15px; }
+    .option-card span { font-size: 13px; color: var(--muted); }
+
+    /* Device Flow Display */
+    .device-box {
+      background: var(--bg);
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      padding: 24px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .device-code {
+      font-family: ui-monospace, monospace;
+      font-size: 32px;
+      font-weight: bold;
+      color: var(--accent);
+      letter-spacing: 4px;
+      margin: 16px 0;
+      cursor: pointer;
+    }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+      transition: 0.1s;
+    }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-secondary { background: white; color: var(--text); border: 1px solid var(--line); }
+    button:hover { opacity: 0.9; }
+
+    .status {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      text-align: center;
+    }
+    .status.info { background: #ddf4ff; color: #0969da; }
+    .status.success { background: #dafbe1; color: var(--ok); }
+    .status.error { background: #ffebe9; color: var(--err); }
+    
+    .step { display: none; animation: fadeIn 0.3s ease; }
+    .step.active { display: block; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <h1>Sign In</h1>
+    <p class="subtitle">Connect to GitHub to manage CI reruns</p>
+
+    <div id="step1" class="step active">
+      <div class="option-card selected" onclick="setMethod('device')">
+        <strong>Device Code</strong>
+        <span>Authorize via GitHub's device login page (Fastest)</span>
+      </div>
+      <div class="option-card" onclick="setMethod('pat')">
+        <strong>Personal Access Token</strong>
+        <span>Manually provide a GitHub PAT</span>
+      </div>
+      <button class="btn-primary" style="margin-top: 20px;" id="nextBtn">Continue</button>
+    </div>
+
+    <div id="step2Device" class="step">
+      <div class="device-box">
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--muted);">Your Device Code</span>
+        <div class="device-code" id="deviceCode" onclick="copyCode()">---- ----</div>
+        <button class="btn-secondary" id="deviceCopyBtn" disabled>Copy & Open GitHub</button>
+      </div>
+      <div id="deviceStatus" class="status info">Waiting for approval...</div>
+      <button class="btn-secondary" style="margin-top: 12px;" onclick="location.reload()">Back</button>
+    </div>
+
+    <div id="step2Pat" class="step">
+      <form id="patForm">
+        <label style="font-size:12px; font-weight:600; display:block; margin-bottom:6px;">Personal Access Token</label>
+        <input id="patInput" type="password" placeholder="ghp_..." style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; margin-bottom:20px;">
+        <button type="submit" class="btn-primary">Sign In with Token</button>
+      </form>
+      <div id="patStatus" class="status" style="display:none;"></div>
+      <button class="btn-secondary" style="margin-top: 12px;" onclick="location.reload()">Back</button>
+    </div>
+  </div>
+
+  <script>
+    const embedded = new URLSearchParams(window.location.search).get('embedded') === '1';
+    let selectedMethod = 'device';
+    const deviceCodeEl = document.getElementById('deviceCode');
+    const deviceStatusEl = document.getElementById('deviceStatus');
+    let pollIntervalId = null;
+    let pollDelayMs = 5000;
+
+    function finishAuth(login) {
+      if (embedded && window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'gh-rerunner-auth-success', login }, window.location.origin);
+        return;
+      }
+      setTimeout(() => window.close(), 300);
+    }
+
+    function setMethod(m) {
+      selectedMethod = m;
+      document.querySelectorAll('.option-card').forEach(c => {
+        c.classList.toggle('selected', c.innerHTML.includes(m === 'device' ? 'Device' : 'Personal'));
+      });
+    }
+
+    document.getElementById('nextBtn').onclick = () => {
+      document.getElementById('step1').classList.remove('active');
+      if (selectedMethod === 'device') {
+        document.getElementById('step2Device').classList.add('active');
+        initDeviceFlow();
+      } else {
+        document.getElementById('step2Pat').classList.add('active');
+      }
+    };
+
+    async function initDeviceFlow() {
+      try {
+        const res = await fetch('/rpc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'requestDeviceCode', params: {} })
+        });
+        const data = await res.json();
+        const result = data.result;
+        deviceCodeEl.textContent = result.user_code || result.device_code;
+        pollDelayMs = Math.max(1000, Number(result.interval || 5) * 1000);
+
+        const copyBtn = document.getElementById('deviceCopyBtn');
+        copyBtn.disabled = false;
+        copyBtn.onclick = () => {
+          navigator.clipboard.writeText(deviceCodeEl.textContent);
+          window.open(result.verification_uri_complete || result.verification_uri, '_blank');
+        };
+
+        pollDeviceToken(result.device_code);
+      } catch (err) {
+        deviceStatusEl.textContent = "Failed to start device flow.";
+        deviceStatusEl.className = "status error";
+      }
+    }
+
+    function pollDeviceToken(code) {
+      if (pollIntervalId) {
+        clearTimeout(pollIntervalId);
+      }
+
+      const pollOnce = async () => {
+        try {
+          const res = await fetch('/rpc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'pollDeviceToken', params: { device_code: code } })
+          });
+          const data = await res.json();
+          if (data.error && data.error.message === 'authorization_pending') {
+            pollIntervalId = setTimeout(pollOnce, pollDelayMs);
+            return;
+          }
+          if (data.error && data.error.message === 'slow_down') {
+            pollDelayMs += 5000;
+            deviceStatusEl.textContent = 'GitHub asked to slow down. Retrying...';
+            deviceStatusEl.className = 'status info';
+            pollIntervalId = setTimeout(pollOnce, pollDelayMs);
+            return;
+          }
+          if (data.error) {
+            clearTimeout(pollIntervalId);
+            deviceStatusEl.textContent = data.error.message || 'Device authorization failed.';
+            deviceStatusEl.className = 'status error';
+            return;
+          }
+          if (data.result) {
+            clearTimeout(pollIntervalId);
+            deviceStatusEl.textContent = `Success! Signed in as ${data.result}`;
+            deviceStatusEl.className = "status success";
+            finishAuth(data.result);
+            return;
+          }
+          pollIntervalId = setTimeout(pollOnce, pollDelayMs);
+        } catch (err) {
+          clearTimeout(pollIntervalId);
+          deviceStatusEl.textContent = 'Device authorization failed.';
+          deviceStatusEl.className = 'status error';
+        }
+      };
+
+      pollIntervalId = setTimeout(pollOnce, pollDelayMs);
+    }
+
+    document.getElementById('patForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const token = document.getElementById('patInput').value;
+      const status = document.getElementById('patStatus');
+      status.style.display = 'block';
+      status.textContent = "Verifying...";
+      
+      const res = await fetch(`/auth?token=${encodeURIComponent(token)}`);
+      const data = await res.json();
+      if (data.status === 'ok') {
+        status.textContent = "Verified! Closing...";
+        status.className = "status success";
+        finishAuth(data.login);
+      } else {
+        status.textContent = data.message;
+        status.className = "status error";
+      }
+    };
+
+    function copyCode() {
+        navigator.clipboard.writeText(deviceCodeEl.textContent);
+        const original = deviceCodeEl.textContent;
+        deviceCodeEl.textContent = "COPIED";
+        setTimeout(() => deviceCodeEl.textContent = original, 1000);
+    }
+  </script>
+</body>
+</html>

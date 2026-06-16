@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>gh-rerunner | Add Targets</title>
+  <style>
+    :root {
+        --bg: #ffffff;
+        --panel: #ffffff;
+        --text: #1f2328;
+        --muted: #656d76;
+        --accent: #2da44e;
+        --accent-hover: #2c974b;
+        --primary: #0969da;
+        --ok: #1a7f37;
+        --err: #cf222e;
+        --line: #d0d7de;
+        --shadow-sm: 0 1px 3px rgba(31,35,40,0.12);
+        --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .shell {
+      min-height: 100vh;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .header { display: none; }
+    .header h2 {
+      margin: 0;
+      font-size: 16px;
+      display: none; /* hidden since the wizard header handles it */
+    }
+    .main {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-height: 0;
+      flex: 1;
+    }
+
+    button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        border-radius: 6px;
+        cursor: pointer;
+        border: 1px solid rgba(31,35,40,0.15);
+        transition: all 0.2s ease;
+        background: #f6f8fa;
+        color: var(--text);
+    }
+    button:hover { background: #f3f4f6; border-color: #8c959f; }
+    button.primary {
+        background: var(--accent);
+        color: #fff;
+        border: 1px solid transparent;
+    }
+    button.primary:hover { background: var(--accent-hover); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+
+    #closeBtn { display: none; } /* hidden since parent wizard handles it */
+
+    .import-panel {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+    }
+    .import-panel textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 13px;
+      resize: vertical;
+      background: #fff;
+      color: var(--text);
+      transition: border-color 0.2s;
+    }
+    .import-panel textarea:focus { outline: none; border-color: var(--primary); }
+    .import-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 190px;
+    }
+    .import-settings {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .import-setting-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .import-settings label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      display: inline;
+      margin: 0;
+      white-space: nowrap;
+    }
+    .import-settings input[type="number"] {
+      width: 82px;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+
+    .footer-status {
+      flex: 1;
+      font-size: 12px;
+      color: var(--muted);
+      min-width: 0;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .footer-status.err { color: var(--err); }
+
+    .auth-inline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .auth-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(31, 35, 40, 0.5);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 30px 12px;
+      z-index: 200;
+      backdrop-filter: blur(2px);
+    }
+    .auth-window {
+      width: 100%;
+      max-width: 560px;
+      height: min(84vh, 860px);
+      background: #fff;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 18px 45px rgba(0,0,0,0.22);
+      display: flex;
+      flex-direction: column;
+    }
+    .auth-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .auth-frame {
+      border: 0;
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      display: block;
+    }
+
+
+
+    .loading {
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #edf2f8 25%, #dce6f2 50%, #edf2f8 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s linear infinite;
+      margin-bottom: 10px;
+    }
+    .loading-row {
+      height: 42px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      background: linear-gradient(90deg, #f4f7fa 25%, #eaf0f6 50%, #f4f7fa 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s linear infinite;
+    }
+    @keyframes shimmer {
+      from { background-position: 200% 0; }
+      to { background-position: -200% 0; }
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--muted);
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .toolbar label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+
+    .list {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+      flex: 1;
+      min-height: 160px;
+      overflow-y: auto;
+    }
+    .list-empty {
+      min-height: 210px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      padding: 20px;
+    }
+    .group-row { border-bottom: 1px solid var(--line); }
+    .group-row:last-child { border-bottom: 0; }
+    .group-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 14px 16px;
+      background: #f6f8fa;
+      cursor: pointer;
+    }
+    .group-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .group-meta {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .group-caret {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+      white-space: nowrap;
+    }
+
+    .pr-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 12px;
+      padding: 12px 16px;
+      border-top: 1px solid var(--line);
+      align-items: start;
+    }
+    .pr-row > div { min-width: 0; }
+    .pr-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.3;
+    }
+    .pr-url {
+      margin-top: 3px;
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-all;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    .pr-detail {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding-top: 8px;
+    }
+
+    @media (max-width: 700px) {
+      .import-panel { grid-template-columns: 1fr; }
+      .import-actions { min-width: 0; flex-direction: row; }
+      .import-settings { align-items: flex-start; gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="header">
+      <h2>Add Tracking Targets</h2>
+      <button id="closeBtn">Close</button>
+    </div>
+
+    <div class="main">
+      <div class="import-panel">
+        <textarea id="importText" placeholder="Paste PR URLs, markdown links, or owner/repo#123 references"></textarea>
+        <div class="import-actions">
+          <button id="importFromText">Import From Text</button>
+          <button id="loadAssigned">Get Assigned PRs</button>
+        </div>
+      </div>
+
+      <div id="listBody" class="list"></div>
+
+      <div class="footer">
+        <div class="import-settings">
+          <div class="import-setting-item">
+            <label for="attempts">Retries</label>
+            <input id="attempts" type="number" value="2" min="1" />
+          </div>
+          <div class="import-setting-item">
+            <label for="interval">Interval (s)</label>
+            <input id="interval" type="number" value="60" min="5" />
+          </div>
+          <div class="import-setting-item">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input id="autoRerun" type="checkbox" checked style="margin:0; width:14px; height:14px;" /> Auto-rerun</label>
+          </div>
+        </div>
+        <span id="status" class="footer-status"></span>
+        <button id="addSelected" class="primary" disabled>Add Selected (0)</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+
+    const listBodyEl = document.getElementById('listBody');
+    const statusEl = document.getElementById('status');
+    const importTextEl = document.getElementById('importText');
+    const importFromTextBtn = document.getElementById('importFromText');
+    const loadAssignedBtn = document.getElementById('loadAssigned');
+    const addSelectedBtn = document.getElementById('addSelected');
+    const closeBtn = document.getElementById('closeBtn');
+    const attemptsEl = document.getElementById('attempts');
+    const intervalEl = document.getElementById('interval');
+    const autoRerunEl = document.getElementById('autoRerun');
+    const state = {
+      entries: [],
+      selected: new Set(),
+      expandedGroups: new Set(),
+      adding: false,
+      fetching: false,
+      title: 'Imported PRs',
+      hiddenTracked: 0,
+      authenticated: false,
+      login: '',
+    };
+
+    function escapeHtml(v) {
+      return String(v || '').replace(/[&<>"']/g, (m) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[m]));
+    }
+
+    function normalizeUrl(url) {
+      return String(url || '').trim().replace(/[?#].*$/, '').replace(/\/$/, '');
+    }
+
+    function extractRepoFromUrl(url) {
+      const m = String(url || '').trim().match(/^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+\/?$/i);
+      return m ? m[1] : '';
+    }
+
+    function setStatus(text, isError) {
+      statusEl.className = 'footer-status' + (isError ? ' err' : '');
+      statusEl.textContent = text || '';
+    }
+
+    function ensureAuthModal() {
+      let backdrop = document.getElementById('authBackdrop');
+      if (backdrop) return backdrop;
+      backdrop = document.createElement('div');
+      backdrop.id = 'authBackdrop';
+      backdrop.className = 'auth-backdrop';
+      backdrop.hidden = true;
+      backdrop.innerHTML = `
+        <div class="auth-window">
+          <div class="auth-header">
+            <span>Sign in</span>
+            <button id="authModalClose">Close</button>
+          </div>
+          <iframe id="authFrame" class="auth-frame" title="Sign in to gh-rerunner" src="about:blank"></iframe>
+        </div>
+      `;
+      document.body.appendChild(backdrop);
+      backdrop.querySelector('#authModalClose').onclick = () => closeAuthModal();
+      backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) closeAuthModal();
+      });
+      return backdrop;
+    }
+
+    function openAuthModal() {
+      const backdrop = ensureAuthModal();
+      const frame = backdrop.querySelector('#authFrame');
+      backdrop.hidden = false;
+      frame.src = `/auth?embedded=1&_=${Date.now()}`;
+    }
+
+    function closeAuthModal() {
+      const backdrop = document.getElementById('authBackdrop');
+      if (!backdrop) return;
+      backdrop.hidden = true;
+    }
+
+    async function refreshAuthStatus() {
+      try {
+        const res = await fetch('/auth/status');
+        const data = await res.json();
+        state.authenticated = Boolean(data && data.authenticated);
+        state.login = String(data && data.login ? data.login : '');
+      } catch {
+        state.authenticated = false;
+        state.login = '';
+      }
+    }
+
+    async function logoutAuth() {
+      try {
+        await fetch('/auth/logout', { method: 'POST' });
+      } finally {
+        await refreshAuthStatus();
+      }
+    }
+
+    async function sendRpc(payload) {
+      try {
+        const res = await fetch('/rpc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        return await res.json();
+      } catch {
+        return null;
+      }
+    }
+
+    async function getTrackedUrlSet() {
+      const data = await sendRpc({ jsonrpc: '2.0', id: Date.now(), method: 'trackerList', params: {} });
+      const rows = data && data.result && Array.isArray(data.result.trackers) ? data.result.trackers : [];
+      return new Set(rows.map((row) => normalizeUrl(row.target)).filter(Boolean));
+    }
+
+    function extractPrEntriesFromText(rawText) {
+      const text = String(rawText || '');
+      const entries = [];
+      const seen = new Set();
+      const mdEntryRe = /^\s*-\s+\[[^\]]+\]\((?<url>https:\/\/github\.com\/\S+)\)\s*(?<detail>.*)$/i;
+      const legacyEntryRe = /^\[(?<status>[A-Z_]+)\]\s+[^:]+:\s+(?<url>https:\/\/github\.com\/\S+)\s*$/;
+      const pushUrl = (url, detail) => {
+        const normalized = normalizeUrl(url);
+        if (!normalized || seen.has(normalized)) return;
+        seen.add(normalized);
+        entries.push({ branch: '', url: normalized, detail });
+      };
+
+      text.split(/\r?\n/).forEach((line) => {
+        const raw = String(line || '');
+        if (!raw.trim()) return;
+        if (/^\s*#\s*gh-rerunner:/i.test(raw) || /^\s*<!--\s*gh-rerunner:/i.test(raw)) return;
+
+        const md = raw.match(mdEntryRe);
+        if (md && md.groups && md.groups.url) {
+          pushUrl(md.groups.url, md.groups.detail || 'Imported from markdown');
+          return;
+        }
+
+        const legacy = raw.match(legacyEntryRe);
+        if (legacy && legacy.groups && legacy.groups.url) {
+          pushUrl(legacy.groups.url, (legacy.groups.status || '').toLowerCase());
+          return;
+        }
+
+        const urlRegex = /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|actions\/runs)\/(\d+)/gi;
+        let match;
+        while ((match = urlRegex.exec(raw)) !== null) {
+          if (raw.includes('/actions/runs/')) continue;
+          pushUrl(`https://github.com/${match[1]}/pull/${match[2]}`, 'Imported from pasted text');
+        }
+
+        const refRegex = /(^|\s|\()([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)\b/gm;
+        while ((match = refRegex.exec(raw)) !== null) {
+          pushUrl(`https://github.com/${match[2]}/pull/${match[3]}`, 'Imported from pasted text');
+        }
+      });
+
+      return entries.filter((entry) => /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/i.test(normalizeUrl(entry.url)));
+    }
+
+    function mergeEntries(newEntries, sourceLabel) {
+      const merged = new Map();
+      state.entries.forEach((entry) => {
+        const key = normalizeUrl(entry.url);
+        if (!key) return;
+        merged.set(key, {
+          branch: String(entry.branch || '').trim(),
+          url: key,
+          detail: String(entry.detail || '').trim(),
+        });
+      });
+
+      newEntries.forEach((entry) => {
+        const key = normalizeUrl(entry.url);
+        if (!key) return;
+        const existing = merged.get(key);
+        const branch = String(entry.branch || '').trim();
+        const detail = String(entry.detail || '').trim();
+        if (existing) {
+          if (!existing.branch && branch) existing.branch = branch;
+          if ((!existing.detail || existing.detail === 'Imported from pasted text') && detail) existing.detail = detail;
+          return;
+        }
+        merged.set(key, {
+          branch,
+          url: key,
+          detail: detail || sourceLabel,
+        });
+      });
+
+      state.entries = [...merged.values()];
+    }
+
+    function buildGroups(entries) {
+      const groups = new Map();
+      entries.forEach((entry, index) => {
+        const url = normalizeUrl(entry.url);
+        if (!url) return;
+        const repo = extractRepoFromUrl(url) || 'Other repositories';
+        const id = repo.toLowerCase();
+        if (!groups.has(id)) groups.set(id, { id, title: repo, items: [] });
+        groups.get(id).items.push({
+          key: `${url}::${index}`,
+          url,
+          branch: String(entry.branch || '').trim(),
+          detail: String(entry.detail || '').trim(),
+        });
+      });
+      return [...groups.values()]
+        .map((g) => ({ ...g, items: g.items.sort((a, b) => (a.branch || a.url).localeCompare(b.branch || b.url)) }))
+        .sort((a, b) => a.title.localeCompare(b.title));
+    }
+
+    function renderLoading() {
+      listBodyEl.innerHTML = '<div style="padding:10px 12px 6px; font-size:12px; color:var(--muted); font-weight:600;">Fetching assigned PRs…</div><div style="padding:0 10px 10px;"><div class="loading"></div><div class="loading-row"></div><div class="loading-row"></div><div class="loading-row"></div></div>';
+      addSelectedBtn.disabled = true;
+      addSelectedBtn.textContent = 'Add Selected (0)';
+    }
+
+    function renderMessage(msg, isError) {
+      const color = isError ? 'var(--err)' : 'var(--muted)';
+      listBodyEl.innerHTML = `<div class="list-empty" style="color:${color}">${escapeHtml(msg)}</div>`;
+      addSelectedBtn.disabled = true;
+      addSelectedBtn.textContent = 'Add Selected (0)';
+    }
+
+    async function renderState() {
+      const tracked = await getTrackedUrlSet();
+      const groups = buildGroups(state.entries)
+        .map((g) => ({ ...g, items: g.items.filter((it) => !tracked.has(it.url)) }))
+        .filter((g) => g.items.length > 0);
+
+      const visibleUrls = new Set(groups.flatMap((g) => g.items.map((it) => it.url)));
+      [...state.selected].forEach((url) => {
+        if (!visibleUrls.has(url)) state.selected.delete(url);
+      });
+
+      state.hiddenTracked = state.entries.length - visibleUrls.size;
+      const selectedCount = state.selected.size;
+      const availableCount = visibleUrls.size;
+      const allSelected = availableCount > 0 && selectedCount === availableCount;
+
+      addSelectedBtn.disabled = state.adding || selectedCount === 0;
+      addSelectedBtn.textContent = state.adding ? `Adding ${selectedCount}...` : `Add Selected (${selectedCount})`;
+
+      if (!groups.length) {
+        const text = state.hiddenTracked > 0
+          ? 'All imported PRs are already tracked.'
+          : 'Paste text or click Get Assigned PRs to build your list.';
+        listBodyEl.innerHTML = `<div class="list-empty">${escapeHtml(text)}</div>`;
+        return;
+      }
+
+      listBodyEl.innerHTML = `
+        <div class="toolbar" style="padding:10px 12px; border-bottom:1px solid var(--line);">
+          <label><input id="selectAllVisible" type="checkbox" ${allSelected ? 'checked' : ''}> Select all visible</label>
+          <span style="font-size:12px; color:var(--muted); margin-left:auto;">${availableCount} available · ${selectedCount} selected${state.hiddenTracked > 0 ? ` · ${state.hiddenTracked} already tracked` : ''}</span>
+        </div>
+        ${groups.map((group) => {
+          const urls = group.items.map((it) => it.url);
+          const selectedInGroup = urls.filter((url) => state.selected.has(url)).length;
+          const groupAll = urls.length > 0 && selectedInGroup === urls.length;
+          const expanded = state.expandedGroups.has(group.id);
+          return `
+            <div class="group-row">
+              <div class="group-header" data-group-toggle="${escapeHtml(group.id)}">
+                <div>
+                  <div class="group-title">
+                    <input type="checkbox" data-group-check="${escapeHtml(group.id)}" ${groupAll ? 'checked' : ''}>
+                    <span>${escapeHtml(group.title)}</span>
+                  </div>
+                  <div class="group-meta">${group.items.length} PRs • ${selectedInGroup} selected</div>
+                </div>
+                <span class="group-caret">${expanded ? '▼' : '▶'}</span>
+              </div>
+              <div style="display:${expanded ? 'block' : 'none'};">
+                ${group.items.map((item) => {
+                  const selected = state.selected.has(item.url);
+                  const title = item.branch || item.url;
+                  return `
+                    <div class="pr-row">
+                      <input type="checkbox" data-entry-check="${escapeHtml(item.url)}" ${selected ? 'checked' : ''}>
+                      <div>
+                        <div class="pr-title">${escapeHtml(title)}</div>
+                        <div class="pr-url">${escapeHtml(item.url)}</div>
+                        ${item.detail ? `<div class="pr-detail">${escapeHtml(item.detail)}</div>` : ''}
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      `;
+
+      const selectAllVisible = document.getElementById('selectAllVisible');
+      if (selectAllVisible) {
+        selectAllVisible.addEventListener('change', (e) => {
+          const checked = Boolean(e.target.checked);
+          groups.forEach((group) => {
+            group.items.forEach((item) => {
+              if (checked) state.selected.add(item.url);
+              else state.selected.delete(item.url);
+            });
+          });
+          void renderState();
+        });
+      }
+
+      listBodyEl.querySelectorAll('[data-group-toggle]').forEach((node) => {
+        node.addEventListener('click', (e) => {
+          if (e.target && e.target.matches('input[type="checkbox"]')) return;
+          const groupId = node.getAttribute('data-group-toggle') || '';
+          if (!groupId) return;
+          if (state.expandedGroups.has(groupId)) state.expandedGroups.delete(groupId);
+          else state.expandedGroups.add(groupId);
+          void renderState();
+        });
+      });
+
+      listBodyEl.querySelectorAll('[data-group-check]').forEach((node) => {
+        node.addEventListener('change', (e) => {
+          const groupId = node.getAttribute('data-group-check') || '';
+          const checked = Boolean(e.target.checked);
+          const group = groups.find((g) => g.id === groupId);
+          if (!group) return;
+          group.items.forEach((item) => {
+            if (checked) state.selected.add(item.url);
+            else state.selected.delete(item.url);
+          });
+          void renderState();
+        });
+      });
+
+      listBodyEl.querySelectorAll('[data-entry-check]').forEach((node) => {
+        node.addEventListener('change', (e) => {
+          const url = node.getAttribute('data-entry-check') || '';
+          if (!url) return;
+          if (e.target.checked) state.selected.add(url);
+          else state.selected.delete(url);
+          void renderState();
+        });
+      });
+    }
+
+    async function loadAssigned(showLoading = false) {
+      if (state.fetching) return;
+      await refreshAuthStatus();
+      if (!state.authenticated) {
+        state._pendingLoadAssigned = true;
+        openAuthModal();
+        return;
+      }
+      state._pendingLoadAssigned = false;
+      state.fetching = true;
+      loadAssignedBtn.disabled = true;
+      if (showLoading && state.entries.length === 0) renderLoading();
+      else setStatus('Fetching assigned PRs...');
+      try {
+        const data = await sendRpc({ jsonrpc: '2.0', id: Date.now(), method: 'getAssignedPRs', params: {} });
+        if (!data) {
+          setStatus('Unable to load assigned PRs.', true);
+          return;
+        }
+        if (data.error) {
+          setStatus(data.error.message || 'Unable to load assigned PRs.', true);
+          return;
+        }
+
+        const result = data.result || {};
+        const title = String(result.title || 'Assigned PRs').trim();
+        const entries = Array.isArray(result.entries) ? result.entries : [];
+        const normalized = entries
+          .map((entry) => ({
+            branch: String(entry && entry.branch ? entry.branch : '').trim(),
+            url: String(entry && entry.url ? entry.url : '').trim(),
+            detail: String(entry && entry.detail ? entry.detail : '').trim(),
+          }))
+          .filter((entry) => entry.url);
+
+        mergeEntries(normalized, 'From assigned PRs');
+        state.title = title || 'Assigned PRs';
+        buildGroups(state.entries).forEach((group) => state.expandedGroups.add(group.id));
+        setStatus('Assigned PRs imported into the selection list.');
+        await renderState();
+      } finally {
+        state.fetching = false;
+        loadAssignedBtn.disabled = false;
+      }
+    }
+
+    async function addSelected() {
+      if (state.adding) return;
+      const urls = [...state.selected].filter(Boolean);
+      if (!urls.length) return;
+      state.adding = true;
+      await renderState();
+
+      const attempts = Math.max(1, Number(attemptsEl.value) || 2);
+      const intervalSeconds = Math.max(5, Number(intervalEl.value) || 60);
+
+      const data = await sendRpc({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'trackerAddTargets',
+        params: {
+          targets_text: urls.join('\n'),
+          attempts,
+          interval_seconds: intervalSeconds,
+          auto_rerun: autoRerunEl.checked,
+          ignore_jobs: [],
+        },
+      });
+
+      state.adding = false;
+      if (!data || data.error) {
+        setStatus('Failed to add selected PRs. Please retry.', true);
+        await renderState();
+        return;
+      }
+
+      const selectedSet = new Set(urls.map((url) => normalizeUrl(url)).filter(Boolean));
+      state.entries = state.entries.filter((entry) => !selectedSet.has(normalizeUrl(entry.url)));
+      state.selected.clear();
+      setStatus(`Added ${urls.length} PR${urls.length === 1 ? '' : 's'} to tracking.`);
+      await renderState();
+
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'gh-rerunner-trackers-updated', added: urls.length }, '*');
+      }
+    }
+
+    function importFromText() {
+      const entries = extractPrEntriesFromText(importTextEl.value);
+      if (!entries.length) {
+        setStatus('No PR references detected. Paste GitHub PR URLs, markdown links, or owner/repo#123.', true);
+        return;
+      }
+      mergeEntries(entries, 'Imported from pasted text');
+      state.title = 'Imported PRs';
+      buildGroups(state.entries).forEach((group) => state.expandedGroups.add(group.id));
+      setStatus(`Imported ${entries.length} PR${entries.length === 1 ? '' : 's'} from text.`);
+      void renderState();
+    }
+
+    function closeEmbedded() {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'gh-rerunner-add-targets-close' }, '*');
+      }
+    }
+
+    importFromTextBtn.onclick = () => importFromText();
+    loadAssignedBtn.onclick = () => { void loadAssigned(true); };
+    addSelectedBtn.onclick = () => { void addSelected(); };
+    closeBtn.onclick = () => closeEmbedded();
+
+    window.addEventListener('message', (event) => {
+      const data = event.data || {};
+      if (data.type === 'gh-rerunner-auth-success') {
+        closeAuthModal();
+        void refreshAuthStatus().then(() => {
+          if (state._pendingLoadAssigned) {
+            state._pendingLoadAssigned = false;
+            void loadAssigned(true);
+          }
+        });
+      }
+      if (data.type === 'gh-rerunner-import-text' && typeof data.text === 'string') {
+        importTextEl.value = data.text;
+        importFromText();
+      }
+      if (data.type === 'gh-rerunner-load-assigned') {
+        void loadAssigned(true);
+      }
+    });
+
+    (function init() {
+      const params = new URLSearchParams(window.location.search);
+      const prefill = params.get('prefill') || '';
+      const shouldLoadAssigned = params.get('fetch_assigned') === '1';
+      if (prefill) {
+        importTextEl.value = prefill;
+        importFromText();
+      } else {
+        void renderState();
+      }
+      if (shouldLoadAssigned) {
+        void loadAssigned(true);
+      }
+      void refreshAuthStatus();
+    })();
+  
+  </script>
+</body>
+</html>
