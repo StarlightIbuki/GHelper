@@ -43,6 +43,19 @@ token-based flow.
 Device-flow tokens use the `repo` scope and work for repos you can access,
 including org-owned repos.
 
+**`auth` options:**
+
+| Flag | Description |
+|---|---|
+| `--device` / `--pat` | Device flow (default) or PAT consent-page mode |
+| `--classic` | Use the classic-PAT consent page (PAT mode only) |
+| `--org ORG_OR_USER` | Pre-select an org/user on the fine-grained PAT page (PAT mode only) |
+| `--no-browser` | Don't auto-open the browser; just print the URL |
+
+On success the token is validated against the GitHub API and saved to
+`~/.ghelper.json` (chmod 600), so later `watch` / `ls` / `logs` invocations pick
+it up without `--token` or `GITHUB_TOKEN`.
+
 ### PAT mode
 
 Use `ghelper auth --pat` if you want to keep using a PAT.
@@ -89,6 +102,8 @@ You can still override the embedded client ID by setting
 | `ghelper ls` | List assigned PRs as Backport-Tracker-compatible markdown |
 | `ghelper logs [TARGETS]...` | Print failed-job logs (`--grep` to filter) |
 | `ghelper config show \| set \| clear` | Manage per-repo defaults at `~/.ghelper.json` |
+| `ghelper config edit-log-filter` | Edit the per-repo failed-CI log-extraction filter in `$EDITOR` |
+| `ghelper config export \| import` | Back up / restore a repo's full config (requirements + log filter) |
 
 `watch` is the canonical supervisor. The TUI is just an interface for an embedded server — the same tracker model is exposed over HTTP/JSON-RPC and the web UI when `--serve` is set, and you can drive it headlessly with `--serve --no-tui`.
 
@@ -158,7 +173,7 @@ names).
 ghelper watch --serve --no-tui
 ```
 
-starts the JSON-RPC server (`/rpc`) and web UI on `127.0.0.1:9999`. Trackers added via the web UI or RPC are persisted to `~/.ghelper-trackers.json` and reload across restarts.
+starts the JSON-RPC server (`/rpc`) and web UI on `127.0.0.1:53210` (override with `--host`/`--port`). Trackers added via the web UI or RPC are persisted to `~/.ghelper-trackers.json` and reload across restarts.
 
 ---
 
@@ -184,7 +199,10 @@ ghelper ls
 
 ## `ghelper logs`
 
-Print failed workflow jobs and their logs. `--grep` keeps only matching lines plus adjacent context, with matched text highlighted.
+Print failed workflow jobs and their logs. By default the per-repo
+[log filter](#per-repo-log-filter) chooses which failed job to show and how to
+grep it; `--grep` overrides that filter for this run, keeping only matching lines
+plus adjacent context, with matched text highlighted.
 
 ```
 ghelper logs --grep 'AssertionError|Traceback' --context 3 \
@@ -197,8 +215,9 @@ ghelper logs --grep 'AssertionError|Traceback' --context 3 \
 |---|---|---|
 | `-t, --token` | `$GITHUB_TOKEN` | GitHub PAT |
 | `-R, --repo OWNER/REPO` | — | Required for bare run IDs |
-| `--grep REGEX` | — | Print only matching lines (plus context) |
-| `--context N` | `2` | Adjacent lines around each match |
+| `--grep REGEX` | — | Override the saved log filter: print only matching lines (supports trailing `+N`/`-N` context) |
+| `--context N` | `2` | Symmetric lines around each `--grep` match (when `--grep` has no `+N`/`-N` tokens) |
+| `--all-jobs` | off | Show every failed job, bypassing the log filter's job-name selection |
 
 You can pipe summary text containing GitHub URLs instead of listing TARGETS.
 
@@ -220,6 +239,46 @@ Saved fields per repo:
 - `ignore_ci`: CI job-name substrings to ignore in rerun decisions
 - `required_labels`: label substrings required on PR targets
 - `required_reviews`: minimum approvals on PR targets (advisory in `watch`)
+- `log_filter`: the failed-CI log-extraction filter (see below)
+
+### Per-repo log filter
+
+`ghelper logs`, the TUI logs pane, and the web UI all decide *which* failed job
+to surface and *how* to grep its log from a per-repo **log filter** — a small DSL
+stored under `log_filter` in `~/.ghelper.json`. Edit it in `$EDITOR` (the seeded
+template documents the full syntax):
+
+```bash
+ghelper config edit-log-filter -R owner/repo
+```
+
+The DSL has two keys:
+
+- `grep: <regex> [+N] [-N]` — applied to each failed job's log (empty = whole
+  log). Trailing `+N` includes `N` lines after each match, `-N` includes `N`
+  before. `^`/`$` are per-line.
+- `job: <name-regex> [=> <grep override> [+N] [-N]]` — match failed jobs by name,
+  in priority order; the first match is treated as the "first failing CI". `=> …`
+  overrides the global grep for that job.
+
+Share or back it up with the dedicated subcommands:
+
+```bash
+ghelper config export-log-filter -R owner/repo > filter.conf
+ghelper config import-log-filter -R owner/repo filter.conf
+```
+
+### Export / import the full config
+
+`config export` / `config import` round-trip a repo's full config — the
+requirements (ignore jobs, required reviews/labels, including the backport-specific
+variants the server and web UI enforce, stored in `~/.ghelper-repo-configs.json`)
+plus the log filter — as a single JSON bundle:
+
+```bash
+ghelper config export -R owner/repo > config.json
+ghelper config import -R owner/repo config.json
+```
 
 ---
 
@@ -260,7 +319,7 @@ pbpaste | ghelper watch
 ghelper logs --grep 'AssertionError|Traceback' --context 3 \
   https://github.com/owner/repo/pull/456
 
-# Headless server mode (no TUI, web UI on localhost:9999)
+# Headless server mode (no TUI, web UI on localhost:53210)
 ghelper watch --serve --no-tui
 ```
 
@@ -305,3 +364,17 @@ nohup ghelper watch --serve --no-tui --host 0.0.0.0 --port 9999 \
 ```
 
 Trackers persist in `~/.ghelper-trackers.json`, so the server can be restarted without losing state. Connect to the web UI at `http://<host>:9999/` or drive it via `POST /rpc`.
+
+---
+
+## Files
+
+ghelper keeps its state in your home directory:
+
+| Path | Contents |
+|---|---|
+| `~/.ghelper.json` | Saved token (chmod 600) and per-repo defaults (`ignore_ci`, `required_labels`, `required_reviews`, `log_filter`) |
+| `~/.ghelper-repo-configs.json` | Per-repo requirements enforced by the server / web UI, including backport-specific variants |
+| `~/.ghelper-trackers.json` | Trackers added via the web UI / RPC, reloaded across server restarts |
+| `~/.ghelper-sessions.json` | Recent `watch` invocations, resumable with `#last` / `#N` (last 20 kept) |
+| `~/.ghelper-cache.json` | Cached PR CI status for `ls` / `--assigned` (1-hour TTL; merged PRs cached indefinitely) |
