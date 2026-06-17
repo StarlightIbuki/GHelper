@@ -1245,6 +1245,7 @@ class JSONRPCServer:
             "repoLogFilterGetStructured": self._repo_log_filter_get_structured,
             "repoLogFilterSetStructured": self._repo_log_filter_set_structured,
             "logFilterPreview": self._log_filter_preview,
+            "logFilterParse": self._log_filter_parse,
             # Failed-CI log extraction
             "trackerLogExcerpt": self._tracker_log_excerpt,
             # Status methods
@@ -1777,6 +1778,14 @@ class JSONRPCServer:
         """Validate a draft filter struct and report which job names each rule matches."""
         return _cli_log_filter_preview(struct, job_names or [])
 
+    async def _log_filter_parse(self, text: str) -> dict[str, Any]:
+        """Parse imported DSL text into a form struct (for the web import flow)."""
+        empty = {"global": {"pattern": "", "before": 0, "after": 0}, "jobs": []}
+        try:
+            return {"ok": True, "error": "", "struct": _log_filter_to_struct(text or "")}
+        except Exception as exc:
+            return {"ok": False, "error": str(getattr(exc, "message", exc)), "struct": empty}
+
     def _compute_log_excerpt(
         self,
         repo: str,
@@ -1804,10 +1813,12 @@ class JSONRPCServer:
         if not failed_jobs:
             return {"run_id": run_id, "run_name": getattr(run, "name", ""), "lines": [],
                     "error": "no failed jobs"}
+        # Selectors are a preference, not a hard filter: _select_failed_jobs falls
+        # back to all failed jobs when none match, so this is non-empty here.
         selected = _select_failed_jobs(failed_jobs, log_filter)
         if not selected:
             return {"run_id": run_id, "run_name": getattr(run, "name", ""), "lines": [],
-                    "error": "no failed job matched the log_filter job: patterns"}
+                    "error": "no failed jobs"}
         job, spec = selected[0]
         try:
             blob = _download_binary(_job_logs_url(job), self.token or "")

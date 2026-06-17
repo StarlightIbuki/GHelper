@@ -90,10 +90,20 @@ def test_select_failed_jobs_orders_by_selector_priority():
     jobs = [
         SimpleNamespace(name="build"),
         SimpleNamespace(name="degraphql tests"),
-        SimpleNamespace(name="lint"),  # not matched by any selector -> dropped
+        SimpleNamespace(name="lint"),  # not matched by any selector -> not surfaced
     ]
     selected = _select_failed_jobs(jobs, lf)
     assert [j.name for j, _ in selected] == ["degraphql tests", "build"]
+
+
+def test_select_failed_jobs_falls_back_when_no_selector_matches():
+    # Selectors are a preference, not a hard filter: when none match, every failed
+    # job is returned (so the UI still shows a log instead of an empty result).
+    lf = _parse_log_filter("job: ^deploy")
+    jobs = [SimpleNamespace(name="build"), SimpleNamespace(name="lint")]
+    selected = _select_failed_jobs(jobs, lf)
+    assert [j.name for j, _ in selected] == ["build", "lint"]
+    assert all(spec is lf.global_grep for _, spec in selected)
 
 
 def test_select_failed_jobs_without_selectors_returns_all():

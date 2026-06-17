@@ -1245,10 +1245,12 @@ def _select_failed_jobs(
 ) -> list[tuple[Any, _GrepSpec]]:
     """Pair each relevant failed job with the grep spec to apply to its log.
 
-    When the filter has ``job:`` selectors, only jobs whose name matches a selector
-    are kept, ordered by selector priority (the first element is the "first failing
-    CI"), each paired with its override-or-global grep.  Otherwise every failed job
-    is returned in natural order using the global grep.
+    When the filter has ``job:`` selectors, jobs whose name matches a selector are
+    surfaced first, ordered by selector priority (the first element is the "first
+    failing CI"), each paired with its override-or-global grep. Selectors are a
+    *preference*, not a hard filter: if none of them match any failed job, we fall
+    back to all failed jobs with the global grep so the user still sees a log rather
+    than an empty result. (Invalid selector regexes are rejected at config time.)
     """
     if not log_filter.jobs:
         return [(job, log_filter.global_grep) for job in failed_jobs]
@@ -1262,6 +1264,9 @@ def _select_failed_jobs(
             if name_re.search(str(getattr(job, "name", "") or "")):
                 used.add(index)
                 selected.append((job, override or log_filter.global_grep))
+    if not selected:
+        # No configured selector matched — degrade gracefully to all failed jobs.
+        return [(job, log_filter.global_grep) for job in failed_jobs]
     return selected
 
 
@@ -1820,6 +1825,38 @@ def config_edit_log_filter_cmd(repo_opt: str) -> None:
     _parse_log_filter(edited)
     _set_repo_log_filter(repo_opt, edited)
     click.echo(f"Saved log filter for {repo_opt} to {_CONFIG_PATH}")
+
+
+@config_group.command("export-log-filter")
+@click.option("-R", "--repo", "repo_opt", required=True, metavar="OWNER/REPO", help="Repository to export the log filter for.")
+def config_export_log_filter_cmd(repo_opt: str) -> None:
+    """Print the repo's failed-CI log filter (DSL) to stdout.
+
+    \b
+    Pipe it to a file to share or back up:
+      ghelper config export-log-filter -R owner/repo > filter.conf
+    """
+    text = _get_repo_log_filter(repo_opt)
+    if not text.strip():
+        text = _default_log_filter_template(repo_opt)
+    click.echo(text, nl=not text.endswith("\n"))
+
+
+@config_group.command("import-log-filter")
+@click.option("-R", "--repo", "repo_opt", required=True, metavar="OWNER/REPO", help="Repository to import the log filter into.")
+@click.argument("source", type=click.File("r"), default="-", metavar="[FILE]")
+def config_import_log_filter_cmd(repo_opt: str, source: Any) -> None:
+    """Import a failed-CI log filter (DSL) from FILE or stdin (validated).
+
+    \b
+      ghelper config import-log-filter -R owner/repo filter.conf
+      cat filter.conf | ghelper config import-log-filter -R owner/repo
+    """
+    text = source.read()
+    # Validate before persisting; surfaces bad regexes early.
+    _parse_log_filter(text)
+    _set_repo_log_filter(repo_opt, text)
+    click.echo(f"Imported log filter for {repo_opt} into {_CONFIG_PATH}")
 
 
 # ---------------------------------------------------------------------------
@@ -3991,10 +4028,6 @@ def failed_logs_cmd(
 
             selected = _select_failed_jobs(failed_jobs, log_filter)
             if not selected:
-                click.echo(
-                    f"{_short_target(run.html_url)}: "
-                    f"{len(failed_jobs)} failed job(s), none matched the log_filter job: patterns"
-                )
                 continue
 
             any_failed_jobs = True

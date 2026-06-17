@@ -130,6 +130,11 @@
         .lf-job-rm { flex-shrink: 0; background: none; border: 1px solid var(--line); border-radius: 5px; color: #57606a; cursor: pointer; padding: 3px 8px; font-size: 12px; }
         .lf-job-rm:hover { color: #cf222e; border-color: #cf222e; }
         .lf-generated { margin: 4px 0 0; padding: 7px 9px; background: #f6f8fa; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; font-family: var(--font-mono, monospace); white-space: pre-wrap; word-break: break-all; color: #57606a; max-height: 120px; overflow: auto; }
+        /* Config modal tabs */
+        .cfg-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+        .cfg-tab { background: none; border: none; border-bottom: 2px solid transparent; padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; }
+        .cfg-tab:hover { color: var(--text); }
+        .cfg-tab.active { color: var(--blue, #0969da); border-bottom-color: var(--blue, #0969da); }
         .check-section-hdr { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 10px; background: #f6f8fa; border: none; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; color: #57606a; cursor: pointer; text-align: left; }
         .check-section-hdr:hover { background: #eaeef2; }
         .check-section-hdr:first-child { border-top: none; }
@@ -428,39 +433,61 @@
                 <button id="repoConfigCloseBtn" class="secondary">Close</button>
             </div>
             <div class="wiz-body" style="display:flex;flex-direction:column;gap:10px;">
-                <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;">Regular PRs (targeting main / master)</div>
-                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Ignore workflows <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line — never auto-rerun)</span></label>
-                <textarea id="repo-config-ignore" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:56px;max-height:120px;background:#fff;" placeholder="e.g. lint&#10;build / deploy"></textarea>
-                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required approvals <span style="font-weight:400;text-transform:none;letter-spacing:0">(0 = not checked)</span></label>
-                <input type="number" min="0" step="1" id="repo-config-req-reviews" style="width:80px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;background:#fff;" value="0">
-                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></label>
-                <textarea id="repo-config-req-labels" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:40px;max-height:100px;background:#fff;" placeholder="e.g. approved"></textarea>
-                <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;margin-top:6px;">Backport PRs (target branch ≠ main / master)</div>
-                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Ignore workflows <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line — never auto-rerun)</span></label>
-                <textarea id="repo-config-bp-ignore" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:56px;max-height:120px;background:#fff;" placeholder="e.g. lint&#10;build / deploy"></textarea>
-                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required approvals <span style="font-weight:400;text-transform:none;letter-spacing:0">(0 = not checked)</span></label>
-                <input type="number" min="0" step="1" id="repo-config-bp-req-reviews" style="width:80px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;background:#fff;" value="0">
-                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></label>
-                <textarea id="repo-config-bp-req-labels" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:40px;max-height:100px;background:#fff;" placeholder="e.g. backport-approved"></textarea>
-                <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;margin-top:6px;">Failed-CI log filter</div>
-
-                <label class="lf-label">Global pattern <span class="lf-hint">(regex; empty = whole log)</span></label>
-                <input id="lf-global-pattern" type="text" spellcheck="false" class="lf-input-mono" placeholder="e.g. ^\s*FAIL\b">
-                <div class="lf-num-row">
-                    <label class="lf-num-label">Lines before <input id="lf-global-before" type="number" min="0" max="500" step="1" value="0" class="lf-num"></label>
-                    <label class="lf-num-label">Lines after <input id="lf-global-after" type="number" min="0" max="500" step="1" value="0" class="lf-num"></label>
+                <div class="cfg-tabs">
+                    <button type="button" class="cfg-tab active" data-tab="requirements" onclick="cfgShowTab('requirements')">Requirements</button>
+                    <button type="button" class="cfg-tab" data-tab="logfilter" onclick="cfgShowTab('logfilter')">Log filter</button>
+                    <button type="button" class="cfg-tab" data-tab="io" onclick="cfgShowTab('io')">Import / Export</button>
                 </div>
-                <div id="lf-global-msg" class="lf-msg"></div>
 
-                <label class="lf-label">Per-job overrides <span class="lf-hint">(priority order; first match = first failing CI shown)</span></label>
-                <div id="lf-jobs"></div>
-                <button type="button" class="secondary btn-sm" style="align-self:flex-start;" onclick="lfAddJobRule()">+ Add job rule</button>
-                <datalist id="lf-job-names"></datalist>
+                <div class="cfg-panel" data-panel="requirements" style="display:flex;flex-direction:column;gap:10px;">
+                    <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;">Regular PRs (targeting main / master)</div>
+                    <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Ignore workflows <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line — never auto-rerun)</span></label>
+                    <textarea id="repo-config-ignore" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:56px;max-height:120px;background:#fff;" placeholder="e.g. lint&#10;build / deploy"></textarea>
+                    <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required approvals <span style="font-weight:400;text-transform:none;letter-spacing:0">(0 = not checked)</span></label>
+                    <input type="number" min="0" step="1" id="repo-config-req-reviews" style="width:80px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;background:#fff;" value="0">
+                    <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></label>
+                    <textarea id="repo-config-req-labels" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:40px;max-height:100px;background:#fff;" placeholder="e.g. approved"></textarea>
+                    <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;margin-top:6px;">Backport PRs (target branch ≠ main / master)</div>
+                    <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Ignore workflows <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line — never auto-rerun)</span></label>
+                    <textarea id="repo-config-bp-ignore" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:56px;max-height:120px;background:#fff;" placeholder="e.g. lint&#10;build / deploy"></textarea>
+                    <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required approvals <span style="font-weight:400;text-transform:none;letter-spacing:0">(0 = not checked)</span></label>
+                    <input type="number" min="0" step="1" id="repo-config-bp-req-reviews" style="width:80px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;background:#fff;" value="0">
+                    <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></label>
+                    <textarea id="repo-config-bp-req-labels" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:40px;max-height:100px;background:#fff;" placeholder="e.g. backport-approved"></textarea>
+                </div>
 
-                <details style="margin-top:4px;">
-                    <summary class="lf-hint" style="cursor:pointer;">Generated config (saved as text)</summary>
-                    <pre id="lf-generated" class="lf-generated"></pre>
-                </details>
+                <div class="cfg-panel" data-panel="logfilter" style="display:none;flex-direction:column;gap:10px;">
+                    <label class="lf-label">Global pattern <span class="lf-hint">(regex; empty = whole log)</span></label>
+                    <input id="lf-global-pattern" type="text" spellcheck="false" class="lf-input-mono" placeholder="e.g. ^\s*FAIL\b">
+                    <div class="lf-num-row">
+                        <label class="lf-num-label">Lines before <input id="lf-global-before" type="number" min="0" max="500" step="1" value="0" class="lf-num"></label>
+                        <label class="lf-num-label">Lines after <input id="lf-global-after" type="number" min="0" max="500" step="1" value="0" class="lf-num"></label>
+                    </div>
+                    <div id="lf-global-msg" class="lf-msg"></div>
+
+                    <label class="lf-label">Per-job overrides <span class="lf-hint">(priority order; first match = first failing CI shown)</span></label>
+                    <div id="lf-jobs"></div>
+                    <button type="button" class="secondary btn-sm" style="align-self:flex-start;" onclick="lfAddJobRule()">+ Add job rule</button>
+                    <datalist id="lf-job-names"></datalist>
+
+                    <details style="margin-top:4px;">
+                        <summary class="lf-hint" style="cursor:pointer;">Generated config (saved as text)</summary>
+                        <pre id="lf-generated" class="lf-generated"></pre>
+                    </details>
+                </div>
+
+                <div class="cfg-panel" data-panel="io" style="display:none;flex-direction:column;gap:10px;">
+                    <label class="lf-label">Export log filter <span class="lf-hint">(the current form, as DSL text)</span></label>
+                    <pre id="lf-export-text" class="lf-generated" style="max-height:160px;"></pre>
+                    <div style="display:flex;gap:8px;">
+                        <button type="button" class="secondary btn-sm" onclick="lfCopyExport()">Copy</button>
+                        <button type="button" class="secondary btn-sm" onclick="lfDownloadExport()">Download .conf</button>
+                    </div>
+                    <label class="lf-label" style="margin-top:8px;">Import log filter <span class="lf-hint">(paste DSL, then load it into the form)</span></label>
+                    <textarea id="lf-import-text" spellcheck="false" class="lf-input-mono" style="min-height:120px;white-space:pre;" placeholder="# grep: ^\s*FAIL\b  +40 -1&#10;# job: .*degraphql.*"></textarea>
+                    <div id="lf-import-msg" class="lf-msg"></div>
+                    <button type="button" class="secondary btn-sm" style="align-self:flex-start;" onclick="lfImportFromText()">Load into form</button>
+                </div>
             </div>
             <div class="wiz-footer">
                 <button class="secondary" onclick="closeRepoConfigModal()">Cancel</button>
@@ -661,6 +688,9 @@
             lfRenderForm();
             document.getElementById('lf-global-msg').textContent = 'Loading…';
             document.getElementById('lf-global-msg').className = 'lf-msg lf-msg-muted';
+            document.getElementById('lf-import-text').value = '';
+            document.getElementById('lf-import-msg').textContent = '';
+            cfgShowTab('requirements');
             repoConfigBackdropEl.hidden = false;
 
             // The log filter lives in ~/.ghelper.json (separate store).
@@ -787,6 +817,66 @@
             }
         });
 
+        function cfgShowTab(name) {
+            document.querySelectorAll('#repoConfigBackdrop .cfg-tab').forEach(b => {
+                b.classList.toggle('active', b.dataset.tab === name);
+            });
+            document.querySelectorAll('#repoConfigBackdrop .cfg-panel').forEach(p => {
+                p.style.display = (p.dataset.panel === name) ? 'flex' : 'none';
+            });
+        }
+        window.cfgShowTab = cfgShowTab;
+
+        function lfExportText() {
+            // Reflect what is currently in the form (preview keeps these in sync).
+            return document.getElementById('lf-generated').textContent || '';
+        }
+
+        async function lfCopyExport() {
+            const text = lfExportText();
+            try {
+                await navigator.clipboard.writeText(text);
+                showToast('Log filter copied', 'success', 1500);
+            } catch (e) {
+                showToast('Copy failed — select and copy manually', 'error');
+            }
+        }
+        window.lfCopyExport = lfCopyExport;
+
+        function lfDownloadExport() {
+            const text = lfExportText();
+            const repo = (_repoConfigActiveRepo || 'repo').replace(/[^\w.-]+/g, '-');
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${repo}.log-filter.conf`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        }
+        window.lfDownloadExport = lfDownloadExport;
+
+        async function lfImportFromText() {
+            const text = document.getElementById('lf-import-text').value;
+            const msg = document.getElementById('lf-import-msg');
+            const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'logFilterParse', params: { text } });
+            const res = (data && data.result) || { ok: false, error: 'import failed' };
+            if (!res.ok) {
+                msg.textContent = `Invalid: ${res.error}`;
+                msg.className = 'lf-msg lf-msg-err';
+                return;
+            }
+            lfState = lfNormalizeStruct(res.struct);
+            lfRenderForm();
+            lfSchedulePreview();
+            msg.textContent = 'Loaded into the form — review, then Save.';
+            msg.className = 'lf-msg';
+            cfgShowTab('logfilter');
+        }
+        window.lfImportFromText = lfImportFromText;
+
         function lfSchedulePreview() {
             if (lfPreviewTimer) clearTimeout(lfPreviewTimer);
             lfPreviewTimer = setTimeout(lfRunPreview, 250);
@@ -799,7 +889,10 @@
             });
             const res = (data && data.result) || { ok: false, error: 'preview failed', jobs: [], global_error: '', text: '' };
             lfLastOk = !!res.ok;
-            document.getElementById('lf-generated').textContent = res.text || '(empty — whole log, all jobs)';
+            const genText = res.text || '(empty — whole log, all jobs)';
+            document.getElementById('lf-generated').textContent = genText;
+            // Keep the Import/Export tab's export view in sync with the live form.
+            document.getElementById('lf-export-text').textContent = res.text || '';
 
             const gEl = document.getElementById('lf-global-msg');
             const gInput = document.getElementById('lf-global-pattern');
@@ -2003,12 +2096,18 @@
             });
             // Persist the failed-CI log filter from the structured form (separate store / RPC).
             lfReadForm();
+            if (!lfLastOk) {
+                showToast('Fix the invalid log-filter pattern before saving', 'error');
+                cfgShowTab('logfilter');
+                return;
+            }
             const lfResp = await sendRpc({
                 jsonrpc: '2.0', id: nextId++, method: 'repoLogFilterSetStructured',
                 params: { repo, struct: lfState },
             });
             if (lfResp && lfResp.error) {
                 showToast(lfResp.error.message || 'Invalid log filter', 'error');
+                cfgShowTab('logfilter');
                 return;
             }
             // A changed filter invalidates any excerpts already shown.
