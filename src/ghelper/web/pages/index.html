@@ -58,6 +58,24 @@
         .pr-status-pill.status-retrying::before { animation: pulse-dot 1.2s ease-in-out infinite; }
         .group-status-pill.status-retrying::before { animation: pulse-dot 1.2s ease-in-out infinite; }
 
+        /* ── Status filter bar ───────────────────────────────────── */
+        .tracker-filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px; }
+        .tracker-filter-bar:empty { display: none; }
+        .tf-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+        .tf-chip {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 12px; font-weight: 600; line-height: 1;
+            padding: 5px 11px; border-radius: 999px; border: 1px solid transparent;
+            cursor: pointer; user-select: none;
+            opacity: 0.5; filter: grayscale(0.55);
+            transition: opacity .12s, filter .12s, box-shadow .12s;
+        }
+        .tf-chip:hover { opacity: 0.8; filter: grayscale(0.2); }
+        .tf-chip.active { opacity: 1; filter: none; box-shadow: inset 0 0 0 1.5px rgba(0,0,0,0.18); }
+        .tf-chip .tf-count { font-weight: 400; opacity: 0.75; }
+        .tf-chip-clear { font-size: 12px; color: #0969da; background: none; border: none; cursor: pointer; padding: 4px 6px; }
+        .tf-chip-clear:hover { text-decoration: underline; }
+
         /* ── Backport group status pills ─────────────────────────── */
         .group-status-pills { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
         .group-status-pill {
@@ -360,6 +378,7 @@
                 </button>
             </div>
         </header>
+        <div id="trackerFilterBar" class="tracker-filter-bar"></div>
         <div id="trackerTree"></div>
 
         <div id="debugTools" style="margin-top: 40px; opacity: 0.8;" hidden>
@@ -554,6 +573,67 @@
         const wizardBackdropEl = document.getElementById('wizardBackdrop');
         const trackerSummaryEl = document.getElementById('trackerSummary');
         const trackerTreeEl = document.getElementById('trackerTree');
+        const trackerFilterEl = document.getElementById('trackerFilterBar');
+
+        // Status filter — multi-select. Keys match classifyTrackerState() output.
+        // Empty set means "show everything". Persisted across reloads.
+        const STATUS_FILTER_LS_KEY = 'ghelper.statusFilter';
+        const statusFilter = new Set();
+        try {
+            const saved = JSON.parse(localStorage.getItem(STATUS_FILTER_LS_KEY) || '[]');
+            if (Array.isArray(saved)) saved.forEach(k => statusFilter.add(k));
+        } catch (e) { /* ignore malformed storage */ }
+        function persistStatusFilter() {
+            try { localStorage.setItem(STATUS_FILTER_LS_KEY, JSON.stringify([...statusFilter])); }
+            catch (e) { /* storage unavailable — non-fatal */ }
+        }
+        const STATUS_FILTERS = [
+            { key: 'action',   cls: 'status-needs-action', label: 'Needs action' },
+            { key: 'pending',  cls: 'status-running',      label: 'Pending' },
+            { key: 'ready',    cls: 'status-passing',      label: 'Passing' },
+            { key: 'merged',   cls: 'status-merged',       label: 'Merged' },
+            { key: 'retrying', cls: 'status-retrying',     label: 'Retrying' },
+            { key: 'unknown',  cls: 'status-unknown',      label: 'Checking' },
+        ];
+
+        function renderFilterBar() {
+            if (!trackerFilterEl) return;
+            const counts = {};
+            (trackerRows || []).forEach(t => {
+                const s = classifyTrackerState(t);
+                counts[s] = (counts[s] || 0) + 1;
+            });
+            // Show a chip for any state that currently has PRs, plus any state
+            // that is actively filtered (so it can be toggled off even at 0).
+            const chips = STATUS_FILTERS
+                .filter(f => counts[f.key] || statusFilter.has(f.key))
+                .map(f => {
+                    const active = statusFilter.has(f.key);
+                    return `<button type="button" class="tf-chip ${f.cls}${active ? ' active' : ''}" data-status="${f.key}">`
+                        + `${escapeHtml(f.label)} <span class="tf-count">${counts[f.key] || 0}</span></button>`;
+                });
+            if (!chips.length) { trackerFilterEl.innerHTML = ''; return; }
+            const clear = statusFilter.size
+                ? `<button type="button" class="tf-chip-clear" data-clear="1">Clear filter</button>`
+                : '';
+            trackerFilterEl.innerHTML = `<span class="tf-label">Filter:</span>${chips.join('')}${clear}`;
+        }
+
+        trackerFilterEl?.addEventListener('click', function(e) {
+            if (e.target.closest('[data-clear]')) {
+                statusFilter.clear();
+                persistStatusFilter();
+                renderTrackersTree(trackerRows);
+                return;
+            }
+            const chip = e.target.closest('.tf-chip');
+            if (!chip) return;
+            const key = chip.dataset.status;
+            if (statusFilter.has(key)) statusFilter.delete(key);
+            else statusFilter.add(key);
+            persistStatusFilter();
+            renderTrackersTree(trackerRows);
+        });
 
         function showToast(message, type = 'info', durationMs = 4000) {
             const container = document.getElementById('toast-container');
@@ -1969,15 +2049,30 @@
 
         function renderTrackersTree(trackers) {
             trackerRows = trackers || [];
-            trackerSummaryEl.textContent = trackerRows.length ? `${trackerRows.length} PRs tracked • Auto-refreshing` : 'No trackers active.';
-            
+            renderFilterBar();
+
+            const filtering = statusFilter.size > 0;
+            const displayRows = filtering
+                ? trackerRows.filter(t => statusFilter.has(classifyTrackerState(t)))
+                : trackerRows;
+
+            trackerSummaryEl.textContent = !trackerRows.length
+                ? 'No trackers active.'
+                : (filtering
+                    ? `${displayRows.length} of ${trackerRows.length} PRs shown • Auto-refreshing`
+                    : `${trackerRows.length} PRs tracked • Auto-refreshing`);
+
             if (!trackerRows.length) {
                 trackerTreeEl.innerHTML = `<div class="empty-state"><h3>No active trackers</h3><p>Track a PR to monitor CI status and auto-rerun failed jobs.</p></div>`;
                 return;
             }
+            if (!displayRows.length) {
+                trackerTreeEl.innerHTML = `<div class="empty-state"><h3>No matching PRs</h3><p>No tracked PRs match the selected status filter.</p></div>`;
+                return;
+            }
 
             const byRepo = new Map();
-            trackerRows.forEach(t => {
+            displayRows.forEach(t => {
                 const repo = t.repo || 'Unknown';
                 if (!byRepo.has(repo)) byRepo.set(repo, []);
                 byRepo.get(repo).push(t);
