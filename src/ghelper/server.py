@@ -30,8 +30,15 @@ from ghelper.cli import (
     _collect_structured_entries,
     _build_pr_display_meta,
     _count_approved_reviews,
+    _decode_log_archive,
+    _download_binary,
+    _extract_log_lines,
+    _get_repo_log_filter,
+    _parse_log_filter,
     _pick_pr_status,
     _resolve_session_ref,
+    _select_failed_jobs,
+    _set_repo_log_filter,
     _request_device_code as _cli_request_device_code,
     _poll_device_token as _cli_poll_device_token,
     _trigger_rerun,
@@ -287,6 +294,9 @@ class JSONRPCServer:
         self._tracker_task: Optional[asyncio.Task[Any]] = None
         # Activity log shared by polling loop, sync wrappers, and TUI.
         self.events: deque[str] = deque(maxlen=5000)
+        # Lazily-fetched, grepped failed-job log excerpts, keyed by
+        # (run_id, log_filter text) so re-greps after a config edit re-download.
+        self._log_excerpt_cache: dict[tuple[int, str], dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # Sync API for in-process callers (TUI thread)
@@ -577,6 +587,51 @@ class JSONRPCServer:
             self._save_trackers()
         self._record_event(f"#{pr_number} {repo_name} branch update queued [{mode}]")
         return {"ok": True, "error": ""}
+
+    def log_excerpt_sync(
+        self,
+        tracker_id: int,
+        run_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Synchronous failed-CI log excerpt for the in-process TUI.
+
+        Mirrors :meth:`_tracker_log_excerpt` but performs the (blocking) download
+        on the calling thread so the CLI key handler can invoke it directly.
+        Results are cached by (run_id, log_filter text).
+        """
+        with self._tracker_lock:
+            tracker = next(
+                (t for t in self._trackers if int(t.get("id", 0) or 0) == int(tracker_id)),
+                None,
+            )
+            if tracker is None:
+                return {"run_id": run_id, "lines": [], "error": "tracker not found"}
+            repo = str(tracker.get("repo", "") or "").strip()
+            jobs = list(tracker.get("jobs") or [])
+
+        if run_id is None:
+            failing = next(
+                (
+                    j for j in jobs
+                    if str(j.get("conclusion", "") or "").lower() in _RETRY_CONCLUSIONS
+                ),
+                None,
+            )
+            if failing is None:
+                return {"run_id": None, "lines": [], "error": "no failing run on this tracker"}
+            run_id = int(failing.get("id", 0) or 0)
+        run_id = int(run_id)
+
+        log_filter_text = _get_repo_log_filter(repo)
+        cache_key = (run_id, log_filter_text)
+        cached = self._log_excerpt_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result = self._compute_log_excerpt(repo, run_id, log_filter_text)
+        if not result.get("error"):
+            self._log_excerpt_cache[cache_key] = result
+        return result
 
     def _load_trackers(self) -> list[dict[str, Any]]:
         if not self.trackers_path.exists():
@@ -1179,6 +1234,10 @@ class JSONRPCServer:
             # Repo-level config
             "repoConfigGet": self._repo_config_get,
             "repoConfigSet": self._repo_config_set,
+            "repoLogFilterGet": self._repo_log_filter_get,
+            "repoLogFilterSet": self._repo_log_filter_set,
+            # Failed-CI log extraction
+            "trackerLogExcerpt": self._tracker_log_excerpt,
             # Status methods
             "pushRunStatus": self._push_run_status,
             # Auth methods
@@ -1657,6 +1716,125 @@ class JSONRPCServer:
             "backport_required_reviews": int(cfg.get("backport_required_reviews", 0) or 0),
             "backport_required_labels": list(cfg.get("backport_required_labels", [])),
         }
+
+    async def _repo_log_filter_get(self, repo: str) -> dict[str, Any]:
+        """Return the raw failed-CI log-extraction DSL text for *repo*."""
+        repo = str(repo or "").strip()
+        text = await asyncio.to_thread(_get_repo_log_filter, repo)
+        return {"repo": repo, "log_filter": text}
+
+    async def _repo_log_filter_set(self, repo: str, text: str) -> dict[str, Any]:
+        """Persist the log-extraction DSL for *repo* (validates it first)."""
+        repo = str(repo or "").strip()
+        if not repo:
+            raise JSONRPCError(self.INVALID_PARAMS, "repo is required")
+        # Validate the DSL before saving so a bad regex surfaces to the caller.
+        try:
+            _parse_log_filter(text or "")
+        except Exception as exc:
+            raise JSONRPCError(self.INVALID_PARAMS, f"invalid log filter: {exc}")
+        await asyncio.to_thread(_set_repo_log_filter, repo, text or "")
+        # Drop cached excerpts so the next fetch re-greps with the new config.
+        self._log_excerpt_cache.clear()
+        self._record_event(f"log filter updated for {repo}")
+        return {"repo": repo, "log_filter": text or ""}
+
+    def _compute_log_excerpt(
+        self,
+        repo: str,
+        run_id: int,
+        log_filter_text: str,
+    ) -> dict[str, Any]:
+        """Blocking: download the failed-job log for *run_id* and grep it.
+
+        Picks the failing job via the repo's log_filter job: selectors (the first
+        match is "the first failing CI"), downloads only that job's log archive,
+        and returns the grepped lines.  Runs off the event loop via to_thread.
+        """
+        log_filter = _parse_log_filter(log_filter_text)
+        gh = self._gh or (Github(self.token) if self.token else None)
+        if gh is None:
+            return {"run_id": run_id, "error": "no GitHub token configured", "lines": []}
+        try:
+            run = gh.get_repo(repo).get_workflow_run(int(run_id))
+        except Exception as exc:
+            return {"run_id": run_id, "error": f"cannot load run: {exc}", "lines": []}
+        try:
+            failed_jobs = _collect_failed_jobs(run)
+        except Exception as exc:
+            return {"run_id": run_id, "error": f"cannot load jobs: {exc}", "lines": []}
+        if not failed_jobs:
+            return {"run_id": run_id, "run_name": getattr(run, "name", ""), "lines": [],
+                    "error": "no failed jobs"}
+        selected = _select_failed_jobs(failed_jobs, log_filter)
+        if not selected:
+            return {"run_id": run_id, "run_name": getattr(run, "name", ""), "lines": [],
+                    "error": "no failed job matched the log_filter job: patterns"}
+        job, spec = selected[0]
+        try:
+            blob = _download_binary(job.logs_url, self.token or "")
+            lines: list[str] = []
+            for _name, log_text in _decode_log_archive(blob):
+                lines.extend(_extract_log_lines(log_text, spec, color=False))
+        except Exception as exc:
+            return {"run_id": run_id, "job_name": getattr(job, "name", ""),
+                    "error": f"cannot fetch log: {exc}", "lines": []}
+        max_lines = 500
+        truncated = len(lines) > max_lines
+        return {
+            "run_id": run_id,
+            "run_name": str(getattr(run, "name", "") or ""),
+            "job_name": str(getattr(job, "name", "") or ""),
+            "lines": lines[:max_lines],
+            "truncated": truncated,
+        }
+
+    async def _tracker_log_excerpt(
+        self,
+        tracker_id: int,
+        run_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Lazily fetch + grep the failed-CI log for a tracker's run.
+
+        When *run_id* is omitted, the first failing run recorded on the tracker is
+        used.  Results are cached by (run_id, log_filter text).
+        """
+        with self._tracker_lock:
+            tracker = next(
+                (t for t in self._trackers if int(t.get("id", 0) or 0) == int(tracker_id)),
+                None,
+            )
+            if tracker is None:
+                raise JSONRPCError(self.INVALID_PARAMS, f"tracker {tracker_id} not found")
+            repo = str(tracker.get("repo", "") or "").strip()
+            jobs = list(tracker.get("jobs") or [])
+
+        if run_id is None:
+            failing = next(
+                (
+                    j for j in jobs
+                    if str(j.get("conclusion", "") or "").lower() in _RETRY_CONCLUSIONS
+                ),
+                None,
+            )
+            if failing is None:
+                return {"run_id": None, "lines": [], "error": "no failing run on this tracker"}
+            run_id = int(failing.get("id", 0) or 0)
+        run_id = int(run_id)
+
+        log_filter_text = await asyncio.to_thread(_get_repo_log_filter, repo)
+        cache_key = (run_id, log_filter_text)
+        cached = self._log_excerpt_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result = await asyncio.to_thread(
+            self._compute_log_excerpt, repo, run_id, log_filter_text
+        )
+        # Only cache successful fetches; let errors be retried.
+        if not result.get("error"):
+            self._log_excerpt_cache[cache_key] = result
+        return result
 
     async def _tracker_refresh(self, tracker_id: Optional[int] = None) -> dict[str, Any]:
         with self._tracker_lock:

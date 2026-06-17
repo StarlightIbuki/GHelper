@@ -480,17 +480,44 @@ def _repo_config(data: dict[str, Any], repo: str) -> dict[str, Any]:
     ignore_ci = cfg.get("ignore_ci", [])
     required_labels = cfg.get("required_labels", [])
     required_reviews = cfg.get("required_reviews", 0)
+    log_filter = cfg.get("log_filter", "")
     if not isinstance(ignore_ci, list):
         ignore_ci = []
     if not isinstance(required_labels, list):
         required_labels = []
     if not isinstance(required_reviews, int):
         required_reviews = 0
+    if not isinstance(log_filter, str):
+        log_filter = ""
     return {
         "ignore_ci": [str(x).strip() for x in ignore_ci if str(x).strip()],
         "required_labels": [str(x).strip() for x in required_labels if str(x).strip()],
         "required_reviews": max(required_reviews, 0),
+        "log_filter": log_filter,
     }
+
+
+def _get_repo_log_filter(repo: str) -> str:
+    """Read the raw ``log_filter`` DSL text for *repo* from ~/.ghelper.json."""
+    return _repo_config(_load_user_config(), repo).get("log_filter", "")
+
+
+def _set_repo_log_filter(repo: str, text: str) -> None:
+    """Persist the raw ``log_filter`` DSL text for *repo* into ~/.ghelper.json."""
+    repo = str(repo or "").strip()
+    if not repo:
+        return
+    cfg = _load_user_config()
+    repos = cfg.setdefault("repos", {})
+    if not isinstance(repos, dict):
+        cfg["repos"] = {}
+        repos = cfg["repos"]
+    entry = repos.get(repo)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["log_filter"] = str(text or "")
+    repos[repo] = entry
+    _save_user_config(cfg)
 
 
 def _target_repo(target: str, repo_opt: Optional[str]) -> Optional[str]:
@@ -877,44 +904,236 @@ def _highlight_pattern(text: str, pattern: Optional[re.Pattern[str]]) -> str:
     return pattern.sub(lambda match: click.style(match.group(0), fg="yellow", bold=True), text)
 
 
+class _GrepSpec:
+    """A compiled log-grep instruction: a regex plus before/after context.
+
+    ``pattern is None`` means "show the whole log".  ``before``/``after`` are the
+    number of adjacent lines to include around each match.  A multiline regex (one
+    that matches across ``\\n``) naturally spans several lines, so block capture and
+    single-line + context both flow through the same renderer.
+    """
+    __slots__ = ("pattern", "before", "after")
+
+    def __init__(
+        self,
+        pattern: Optional[re.Pattern[str]],
+        before: int = 0,
+        after: int = 0,
+    ) -> None:
+        self.pattern = pattern
+        self.before = max(0, before)
+        self.after = max(0, after)
+
+
+class _LogFilter:
+    """Parsed per-repo log-extraction config (the ``log_filter`` DSL)."""
+    __slots__ = ("global_grep", "jobs")
+
+    def __init__(
+        self,
+        global_grep: _GrepSpec,
+        jobs: list[tuple[re.Pattern[str], Optional[_GrepSpec]]],
+    ) -> None:
+        self.global_grep = global_grep
+        # Ordered (job-name regex, optional grep override) pairs.
+        self.jobs = jobs
+
+
+# Trailing context tokens in a grep spec, e.g. "+40" / "-1".
+_CONTEXT_TOKEN_RE = re.compile(r"^[+-]\d+$")
+
+
+def _parse_grep_spec(text: str) -> _GrepSpec:
+    """Parse a ``<regex> [+N] [-N]`` grep spec.
+
+    Trailing whitespace-separated tokens that look like ``+N`` / ``-N`` are peeled
+    off as after/before context; everything before them is the regex (compiled with
+    ``re.MULTILINE`` so ``^``/``$`` are per-line).  An empty regex means "whole log".
+    """
+    raw = (text or "").strip()
+    before = 0
+    after = 0
+    parts = raw.split()
+    n_ctx = 0
+    while n_ctx < len(parts) and _CONTEXT_TOKEN_RE.match(parts[len(parts) - 1 - n_ctx]):
+        value = int(parts[len(parts) - 1 - n_ctx])
+        if value >= 0:
+            after = value
+        else:
+            before = -value
+        n_ctx += 1
+    # Drop the trailing context tokens while preserving the regex's internal spacing.
+    if n_ctx == 0:
+        pattern_src = raw
+    elif n_ctx >= len(parts):
+        pattern_src = ""
+    else:
+        pattern_src = raw.rsplit(None, n_ctx)[0]
+    if not pattern_src:
+        return _GrepSpec(None, before, after)
+    try:
+        pattern = re.compile(pattern_src, re.MULTILINE)
+    except re.error as exc:
+        raise click.BadParameter(f"invalid grep regex {pattern_src!r}: {exc}") from exc
+    return _GrepSpec(pattern, before, after)
+
+
+def _parse_log_filter(text: Optional[str]) -> _LogFilter:
+    """Parse the ``log_filter`` DSL into a :class:`_LogFilter`.
+
+    Lines starting with ``#`` (and blank lines) are comments.  Recognised keys:
+      ``grep: <regex> [+N] [-N]``   global grep spec (last one wins)
+      ``job: <name-regex> [=> <grep override> [+N] [-N]]``  ordered job selectors
+    """
+    global_grep = _GrepSpec(None)
+    jobs: list[tuple[re.Pattern[str], Optional[_GrepSpec]]] = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("grep:"):
+            global_grep = _parse_grep_spec(line[len("grep:"):])
+            continue
+        if line.lower().startswith("job:"):
+            body = line[len("job:"):].strip()
+            override: Optional[_GrepSpec] = None
+            if "=>" in body:
+                name_src, grep_src = body.split("=>", 1)
+                override = _parse_grep_spec(grep_src)
+            else:
+                name_src = body
+            name_src = name_src.strip()
+            if not name_src:
+                continue
+            try:
+                name_re = re.compile(name_src)
+            except re.error as exc:
+                raise click.BadParameter(f"invalid job regex {name_src!r}: {exc}") from exc
+            jobs.append((name_re, override))
+    return _LogFilter(global_grep, jobs)
+
+
+def _default_log_filter_template(repo: str) -> str:
+    """Commented DSL template seeded into the editor when no config exists yet."""
+    return (
+        f"# ghelper log-extraction config for {repo or '<owner/repo>'}\n"
+        "#\n"
+        "# grep: <regex>  [+N] [-N]\n"
+        "#   Regex applied to each failed job's log. Empty -> whole log.\n"
+        "#   Trailing +N includes N lines AFTER each match, -N includes N lines BEFORE.\n"
+        "#   ^ and $ are per-line (MULTILINE always on). For a multi-line block, match\n"
+        "#   the start line then following lines that aren't the block terminator, e.g.\n"
+        "#   capture a busted FAIL block up to the next '__________' separator:\n"
+        "#     grep: ^\\s*FAIL\\b.*(?:\\n(?!.*__________).*)*\n"
+        "#\n"
+        "# job: <name-regex>  [=> <grep override> [+N] [-N]]\n"
+        "#   Match against CI job names, in priority order. The FIRST matching failed\n"
+        "#   job is shown as the first failing CI. `=> ...` overrides the global grep\n"
+        "#   for that job. With no job: lines, all failed jobs use the global grep.\n"
+        "#\n"
+        "# Examples (uncomment and edit):\n"
+        "# grep: ^\\s*FAIL\\b  +40 -1\n"
+        "# job: .*degraphql.*  =>  ^\\s*FAIL\\b.*(?:\\n(?!.*__________).*)*\n"
+        "# job: ^build\n"
+    )
+
+
+def _extract_log_lines(
+    text: str,
+    spec: _GrepSpec,
+    color: bool = True,
+) -> list[str]:
+    """Render the lines of *text* selected by *spec*.
+
+    Each regex match is mapped to the line range it spans, expanded by
+    ``spec.before``/``spec.after``, and overlapping ranges are merged.  Matched
+    lines are prefixed with ``>``; ``...`` separates discontiguous ranges.  When
+    ``spec.pattern`` is ``None`` the whole log is returned.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return []
+
+    def _highlight(line: str) -> str:
+        if not color or spec.pattern is None:
+            return line
+        return _highlight_pattern(line, spec.pattern)
+
+    if spec.pattern is None:
+        return [f"{index + 1:>5} | {_highlight(line)}" for index, line in enumerate(lines)]
+
+    matched_lines: set[int] = set()
+    match_ranges: list[tuple[int, int]] = []
+    for match in spec.pattern.finditer(text):
+        start, end = match.start(), match.end()
+        # An empty match still marks its line.
+        last = max(start, end - 1)
+        start_line = text.count("\n", 0, start)
+        end_line = text.count("\n", 0, last)
+        match_ranges.append((start_line, end_line))
+        for li in range(start_line, end_line + 1):
+            matched_lines.add(li)
+
+    if not match_ranges:
+        return []
+
+    expanded = sorted(
+        (max(0, s - spec.before), min(len(lines) - 1, e + spec.after))
+        for s, e in match_ranges
+    )
+    merged: list[tuple[int, int]] = []
+    cur_start, cur_end = expanded[0]
+    for s, e in expanded[1:]:
+        if s <= cur_end + 1:
+            cur_end = max(cur_end, e)
+        else:
+            merged.append((cur_start, cur_end))
+            cur_start, cur_end = s, e
+    merged.append((cur_start, cur_end))
+
+    rendered: list[str] = []
+    for range_index, (start, end) in enumerate(merged):
+        if range_index > 0:
+            rendered.append("    ...")
+        for index in range(start, end + 1):
+            prefix = ">" if index in matched_lines else " "
+            rendered.append(f"{prefix}{index + 1:>5} | {_highlight(lines[index])}")
+    return rendered
+
+
 def _render_context_lines(
     text: str,
     pattern: Optional[re.Pattern[str]],
     context: int,
 ) -> list[str]:
-    lines = text.splitlines()
-    if not lines:
-        return []
-    if pattern is None:
-        return [f"{index + 1:>5} | {_highlight_pattern(line, pattern)}" for index, line in enumerate(lines)]
+    """Back-compat wrapper: symmetric ``context`` lines around each match."""
+    return _extract_log_lines(text, _GrepSpec(pattern, before=context, after=context))
 
-    match_indexes = [index for index, line in enumerate(lines) if pattern.search(line)]
-    if not match_indexes:
-        return []
 
-    ranges: list[tuple[int, int]] = []
-    start = max(0, match_indexes[0] - context)
-    end = min(len(lines) - 1, match_indexes[0] + context)
-    for index in match_indexes[1:]:
-        next_start = max(0, index - context)
-        next_end = min(len(lines) - 1, index + context)
-        if next_start <= end + 1:
-            end = max(end, next_end)
-        else:
-            ranges.append((start, end))
-            start, end = next_start, next_end
-    ranges.append((start, end))
+def _select_failed_jobs(
+    failed_jobs: list[Any],
+    log_filter: _LogFilter,
+) -> list[tuple[Any, _GrepSpec]]:
+    """Pair each relevant failed job with the grep spec to apply to its log.
 
-    rendered: list[str] = []
-    for range_index, (start, end) in enumerate(ranges):
-        if range_index > 0:
-            rendered.append("    ...")
-        for index in range(start, end + 1):
-            prefix = ">" if pattern.search(lines[index]) else " "
-            rendered.append(
-                f"{prefix}{index + 1:>5} | {_highlight_pattern(lines[index], pattern)}"
-            )
-    return rendered
+    When the filter has ``job:`` selectors, only jobs whose name matches a selector
+    are kept, ordered by selector priority (the first element is the "first failing
+    CI"), each paired with its override-or-global grep.  Otherwise every failed job
+    is returned in natural order using the global grep.
+    """
+    if not log_filter.jobs:
+        return [(job, log_filter.global_grep) for job in failed_jobs]
+
+    selected: list[tuple[Any, _GrepSpec]] = []
+    used: set[int] = set()
+    for name_re, override in log_filter.jobs:
+        for index, job in enumerate(failed_jobs):
+            if index in used:
+                continue
+            if name_re.search(str(getattr(job, "name", "") or "")):
+                used.add(index)
+                selected.append((job, override or log_filter.global_grep))
+    return selected
 
 
 def _collect_failed_jobs(run: Any) -> list[Any]:
@@ -1438,6 +1657,26 @@ def config_clear_cmd(repo_opt: str) -> None:
         click.echo(f"Removed config for {repo_opt} from {_CONFIG_PATH}")
     else:
         click.echo(f"No saved config for {repo_opt}")
+
+
+@config_group.command("edit-log-filter")
+@click.option("-R", "--repo", "repo_opt", required=True, metavar="OWNER/REPO", help="Repository to edit the log filter for.")
+def config_edit_log_filter_cmd(repo_opt: str) -> None:
+    """Open $EDITOR to edit the per-repo failed-CI log-extraction config.
+
+    The config controls how `ghelper logs` / the TUI / the web UI grep failed-job
+    logs (see the comment header in the editor for the DSL).
+    """
+    current = _get_repo_log_filter(repo_opt)
+    seed = current if current.strip() else _default_log_filter_template(repo_opt)
+    edited = click.edit(text=seed, extension=".conf")
+    if edited is None:
+        click.echo("No changes (editor exited without saving).")
+        return
+    # Validate by parsing before persisting; surfaces bad regexes early.
+    _parse_log_filter(edited)
+    _set_repo_log_filter(repo_opt, edited)
+    click.echo(f"Saved log filter for {repo_opt} to {_CONFIG_PATH}")
 
 
 # ---------------------------------------------------------------------------
@@ -1992,6 +2231,7 @@ def run_cmd(
         "expanded_targets": set(),  # group keys with member sub-rows shown
         "tick": 0,                  # incremented every render, drives marquee scrolling
         "show_logs_pane": True,
+        "show_log_excerpt": False,  # show grepped failed-CI log under each failed run
         # Active modal overlay (e.g. {"kind": "add_tracker", "buffer": "", "error": ""}).
         "modal": None,
     }
@@ -2355,6 +2595,8 @@ def run_cmd(
 
         out: list[str] = [header]
 
+        show_log_excerpt = bool(ui_state.get("show_log_excerpt", False))
+
         if buckets["failed"]:
             out.append(f"▾ failed ({len(buckets['failed'])})")
             for rid in sorted(buckets["failed"]):
@@ -2364,6 +2606,20 @@ def run_cmd(
                 extra = len(state[rid].get("failed_jobs") or []) - 5
                 if extra > 0:
                     out.append(f"      • … +{extra} more")
+                if show_log_excerpt:
+                    excerpt = state[rid].get("log_excerpt")
+                    if excerpt is None:
+                        out.append("      [log] press L to load excerpt")
+                    elif excerpt.get("error"):
+                        out.append(f"      [log] {excerpt['error']}")
+                    else:
+                        job_name = excerpt.get("job_name", "")
+                        lines = excerpt.get("lines") or []
+                        out.append(f"      [log] {job_name}:")
+                        for line in lines[:15]:
+                            out.append(f"        {line}")
+                        if excerpt.get("truncated") or len(lines) > 15:
+                            out.append("        … (truncated — use `ghelper logs` for full output)")
 
         if buckets["running"]:
             out.append(f"▾ running ({len(buckets['running'])})")
@@ -2708,6 +2964,47 @@ def run_cmd(
                 changed = True
                 continue
 
+            if key == "L":
+                # Toggle the failed-CI log excerpt; lazily download for the
+                # selected PR's failed runs when switching it on.
+                ui_state["show_log_excerpt"] = not ui_state.get("show_log_excerpt", False)
+                if ui_state["show_log_excerpt"]:
+                    rows = _target_row_items()
+                    if rows:
+                        idx = max(0, min(ui_state["selected_targets"], len(rows) - 1))
+                        kind, primary, member = rows[idx]
+                        members = [member] if kind == "member" else _group_members_for(primary)
+                        for m in members:
+                            tid = int(target_state.get(m, {}).get("tracker_id") or 0)
+                            if not tid:
+                                continue
+                            for rid in target_state.get(m, {}).get("run_ids", []):
+                                s = state.get(rid)
+                                if not s or s.get("result") != "failed":
+                                    continue
+                                if s.get("log_excerpt") is not None:
+                                    continue
+                                _event(f"loading log excerpt for run {rid}…")
+                                try:
+                                    s["log_excerpt"] = _rpc_server.log_excerpt_sync(tid, rid)
+                                except Exception as exc:  # pragma: no cover - defensive
+                                    s["log_excerpt"] = {"error": str(exc), "lines": []}
+                changed = True
+                continue
+
+            if key == "E":
+                # Defer to the main loop so it can pause the Live display and
+                # restore the terminal before launching the editor.
+                rows = _target_row_items()
+                if rows:
+                    idx = max(0, min(ui_state["selected_targets"], len(rows) - 1))
+                    _, primary, _ = rows[idx]
+                    repo = _target_repo(primary, repo_opt) or ""
+                    if repo:
+                        ui_state["pending_edit_repo"] = repo
+                changed = True
+                continue
+
             focus = ui_state["focus"]
             selectable = focus == "targets"
 
@@ -3011,7 +3308,7 @@ def run_cmd(
             space_hint = "space expand"
         help_text = (
             f"[{focus_name} {scroll} · {status}] TAB pane · j/k row · ←/→ page · {space_hint} · "
-            f"a add · i login · w device-login · b update-branch · d remove · r refresh · l toggle logs · o/Enter open · Ctrl-C exit"
+            f"a add · i login · w device-login · b update-branch · d remove · r refresh · l toggle logs · L ci-log · E edit-filter · o/Enter open · Ctrl-C exit"
         )
         footer_border = "blue" if status == "running" else (
             "green" if all(s["result"] == "success" for s in state.values()) else "red"
@@ -3250,6 +3547,13 @@ def run_cmd(
                         "last_conclusion": conclusion,
                         "failed_jobs": list(job.get("failed_jobs") or prev.get("failed_jobs") or []),
                         "failed_jobs_conclusion": conclusion if (conclusion and conclusion.lower() in _RETRY_CONCLUSIONS) else None,
+                        # Lazily-loaded grepped log excerpt (None until fetched).
+                        # Cleared when the run's conclusion changes so stale logs don't linger.
+                        "log_excerpt": (
+                            prev.get("log_excerpt")
+                            if prev.get("last_conclusion") == conclusion
+                            else None
+                        ),
                     }
 
             # Drop trackers + their runs that no longer exist server-side.
@@ -3323,6 +3627,39 @@ def run_cmd(
                         _render_dashboard()
 
                 if use_rich_tui and _handle_ui_keys():
+                    if live_obj is not None:
+                        live_obj.update(_build_rich_dashboard())
+
+                # An `E` keystroke defers the editor launch to here, where the
+                # Live display and raw terminal mode can be safely suspended.
+                edit_repo = ui_state.pop("pending_edit_repo", None)
+                if use_rich_tui and edit_repo:
+                    current = _get_repo_log_filter(edit_repo)
+                    seed = current if current.strip() else _default_log_filter_template(edit_repo)
+                    try:
+                        if live_obj is not None:
+                            live_obj.stop()
+                        if original_tty is not None and termios is not None and sys.stdin.isatty():
+                            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, original_tty)
+                        edited = click.edit(text=seed, extension=".conf")
+                    finally:
+                        if original_tty is not None and tty is not None and sys.stdin.isatty():
+                            tty.setcbreak(sys.stdin.fileno())
+                        if live_obj is not None:
+                            live_obj.start()
+                    if edited is not None:
+                        try:
+                            _parse_log_filter(edited)  # validate before saving
+                            _set_repo_log_filter(edit_repo, edited)
+                            # Drop cached excerpts so they re-grep with the new config.
+                            _rpc_server._log_excerpt_cache.clear()
+                            for s in state.values():
+                                s["log_excerpt"] = None
+                            _event(f"edited log filter for {edit_repo}")
+                        except click.BadParameter as exc:
+                            _event(f"log filter not saved: {exc.message}")
+                    else:
+                        _event("log filter unchanged")
                     if live_obj is not None:
                         live_obj.update(_build_rich_dashboard())
     except KeyboardInterrupt:
@@ -3402,14 +3739,20 @@ def run_cmd(
     "--grep", "grep_pattern",
     default=None,
     metavar="REGEX",
-    help="Print only matching log lines plus surrounding context.",
+    help="Override the saved log_filter: print only matching lines (supports trailing +N/-N context).",
 )
 @click.option(
     "--context",
     default=2,
     show_default=True,
     type=click.IntRange(0, 50),
-    help="Adjacent lines to include around each --grep match.",
+    help="Symmetric lines around each --grep match (when --grep has no +N/-N tokens).",
+)
+@click.option(
+    "--all-jobs",
+    is_flag=True,
+    default=False,
+    help="Show every failed job, bypassing the log_filter's job-name selection.",
 )
 def failed_logs_cmd(
     targets: tuple[str, ...],
@@ -3417,9 +3760,35 @@ def failed_logs_cmd(
     repo_opt: Optional[str],
     grep_pattern: Optional[str],
     context: int,
+    all_jobs: bool,
 ) -> None:
-    """Print failed workflow jobs and their logs, filtered by an optional regex."""
+    """Print failed workflow jobs and their logs.
+
+    Uses the per-repo ``log_filter`` config (``ghelper config edit-log-filter``) to
+    pick which failed job to show and how to grep it.  ``--grep`` overrides it.
+    """
     g = Github(token)
+
+    # Build the CLI grep override, if any (supports "REGEX +N -N").
+    cli_spec: Optional[_GrepSpec] = None
+    if grep_pattern is not None:
+        cli_spec = _parse_grep_spec(grep_pattern)
+        if cli_spec.before == 0 and cli_spec.after == 0:
+            cli_spec = _GrepSpec(cli_spec.pattern, before=context, after=context)
+
+    # Per-repo log_filter, parsed lazily and cached by repo.
+    _filter_cache: dict[str, _LogFilter] = {}
+
+    def _filter_for(repo_name: Optional[str]) -> _LogFilter:
+        if cli_spec is not None:
+            return _LogFilter(cli_spec, jobs=[])
+        key = repo_name or ""
+        if key not in _filter_cache:
+            parsed_filter = _parse_log_filter(_get_repo_log_filter(key)) if key else _LogFilter(_GrepSpec(None), [])
+            if all_jobs:
+                parsed_filter = _LogFilter(parsed_filter.global_grep, jobs=[])
+            _filter_cache[key] = parsed_filter
+        return _filter_cache[key]
 
     raw_text_parts: list[str] = []
 
@@ -3454,7 +3823,6 @@ def failed_logs_cmd(
             "No targets found. Pass URLs / run IDs, or pipe backport-tracker output."
         )
 
-    pattern = _compile_regex(grep_pattern)
     any_failed_jobs = False
 
     click.echo(f"Resolving targets...", err=True)
@@ -3463,6 +3831,8 @@ def failed_logs_cmd(
             resolved = _resolve_target(entry.url, repo_opt, g)
         except GithubException as exc:
             raise click.ClickException(f"Cannot resolve {entry.url!r}: {_exc_message(exc)}")
+
+        log_filter = _filter_for(_target_repo(entry.url, repo_opt))
 
         for run in resolved:
             click.echo(f"Fetching failed jobs from {_short_target(run.html_url)}...", err=True)
@@ -3476,10 +3846,18 @@ def failed_logs_cmd(
                 click.echo(f"{_short_target(run.html_url)}: no failed jobs found")
                 continue
 
+            selected = _select_failed_jobs(failed_jobs, log_filter)
+            if not selected:
+                click.echo(
+                    f"{_short_target(run.html_url)}: "
+                    f"{len(failed_jobs)} failed job(s), none matched the log_filter job: patterns"
+                )
+                continue
+
             any_failed_jobs = True
             click.echo(f"{_short_target(run.html_url)}")
 
-            for job_index, job in enumerate(failed_jobs, 1):
+            for job_index, (job, spec) in enumerate(selected, 1):
                 click.echo(f"  job: {job.name} ({job.conclusion})")
 
                 failed_steps = [
@@ -3493,13 +3871,13 @@ def failed_logs_cmd(
                 else:
                     click.echo("    failed steps: (none reported by API)")
 
-                click.echo(f"    Downloading logs ({job_index}/{len(failed_jobs)})...", err=True)
+                click.echo(f"    Downloading logs ({job_index}/{len(selected)})...", err=True)
                 blob = _download_binary(job.logs_url, token)
                 click.echo(f"    Parsing logs...", err=True)
                 for file_name, log_text in _decode_log_archive(blob):
                     click.echo(f"    log: {file_name}")
-                    rendered = _render_context_lines(log_text, pattern, context)
-                    if pattern and not rendered:
+                    rendered = _extract_log_lines(log_text, spec)
+                    if spec.pattern is not None and not rendered:
                         click.echo("      (no matching lines)")
                         continue
                     for line in rendered:

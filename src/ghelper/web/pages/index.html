@@ -106,6 +106,13 @@
         .check-link:hover { text-decoration: underline; }
         .check-fold-btn { display: block; padding: 2px 10px 3px; background: none; border: none; color: #8b949e; font-size: 11px; cursor: pointer; text-align: left; }
         .check-fold-btn:hover { color: #0969da; text-decoration: underline; }
+        .check-log-btn { flex-shrink: 0; background: none; border: 1px solid var(--line, #d0d7de); border-radius: 4px; color: #57606a; font-size: 10px; padding: 1px 6px; cursor: pointer; margin-left: 4px; }
+        .check-log-btn:hover { color: #cf222e; border-color: #cf222e; }
+        .log-excerpt { background: #0d1117; color: #c9d1d9; border-bottom: 1px solid #f0f4f8; padding: 6px 10px; }
+        .log-excerpt-job { color: #f0883e; font-size: 11px; font-family: var(--font-mono, monospace); margin-bottom: 4px; }
+        .log-excerpt-pre { margin: 0; max-height: 320px; overflow: auto; font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.45; white-space: pre; color: #c9d1d9; }
+        .log-excerpt-msg { color: #8b949e; font-size: 11px; padding: 2px 0; }
+        .log-excerpt-err { color: #ff7b72; }
         .check-section-hdr { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 10px; background: #f6f8fa; border: none; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; color: #57606a; cursor: pointer; text-align: left; }
         .check-section-hdr:hover { background: #eaeef2; }
         .check-section-hdr:first-child { border-top: none; }
@@ -418,6 +425,9 @@
                 <input type="number" min="0" step="1" id="repo-config-bp-req-reviews" style="width:80px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;background:#fff;" value="0">
                 <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></label>
                 <textarea id="repo-config-bp-req-labels" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:40px;max-height:100px;background:#fff;" placeholder="e.g. backport-approved"></textarea>
+                <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;margin-top:6px;">Failed-CI log filter</div>
+                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Log extraction config <span style="font-weight:400;text-transform:none;letter-spacing:0">(grep: / job: DSL — # comments)</span></label>
+                <textarea id="repo-config-log-filter" spellcheck="false" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:120px;max-height:260px;background:#fff;white-space:pre;" placeholder="# grep: ^\s*FAIL\b  +40 -1&#10;# job: .*degraphql.*  =>  ^\s*FAIL\b.*(?:\n(?!.*__________).*)*"></textarea>
             </div>
             <div class="wiz-footer">
                 <button class="secondary" onclick="closeRepoConfigModal()">Cancel</button>
@@ -526,6 +536,9 @@
         const expandedPassedJobs = new Set();
         const expandedAllJobs = new Set();
         const toggledSections = new Set(); // "${trackerId}:ci|reviews|labels" — flips from default
+        const logExpanded = new Set();     // "${trackerId}:${runId}" — failed-CI log shown
+        const logExcerptCache = new Map(); // runId -> { loading?, error?, job_name, lines[], truncated }
+        const logAutoLoaded = new Set();   // trackerIds whose first failing CI was auto-loaded
         const selectedTrackers = new Set();
         let debugVisible = false;
         const wizardState = {
@@ -596,7 +609,7 @@
             addTargetsBackdropEl.hidden = true;
         }
 
-        function openRepoConfigModal(repo) {
+        async function openRepoConfigModal(repo) {
             _repoConfigActiveRepo = repo;
             const cfg = repoConfigs[repo] || {};
             document.getElementById('repoConfigTitle').textContent = repo;
@@ -606,6 +619,11 @@
             document.getElementById('repo-config-bp-ignore').value = (cfg.backport_ignore_jobs || []).join('\n');
             document.getElementById('repo-config-bp-req-reviews').value = cfg.backport_required_reviews ?? 0;
             document.getElementById('repo-config-bp-req-labels').value = (cfg.backport_required_labels || []).join('\n');
+            // The log filter lives in ~/.ghelper.json (separate store) — fetch on open.
+            const lfEl = document.getElementById('repo-config-log-filter');
+            lfEl.value = '';
+            const lfData = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'repoLogFilterGet', params: { repo } });
+            if (lfData && lfData.result) lfEl.value = lfData.result.log_filter || '';
             repoConfigBackdropEl.hidden = false;
         }
         window.openRepoConfigModal = openRepoConfigModal;
@@ -1326,6 +1344,18 @@
                 if (toggledSections.has(skey)) toggledSections.delete(skey);
                 else toggledSections.add(skey);
             }
+            if (action === 'toggle-log') {
+                const runId = Number(btn.dataset.runId);
+                const lkey = `${id}:${runId}`;
+                if (logExpanded.has(lkey)) {
+                    logExpanded.delete(lkey);
+                } else {
+                    logExpanded.add(lkey);
+                    if (!logExcerptCache.has(runId)) {
+                        loadLogExcerpt(id, runId);  // async; re-renders on completion
+                    }
+                }
+            }
             const tracker = trackerRows.find(t => t.id == id);
             if (tracker) {
                 const card = document.getElementById(`pr-card-${id}`);
@@ -1737,6 +1767,19 @@
                     backport_required_labels: bpRequiredLabels,
                 },
             });
+            // Persist the failed-CI log filter (separate store / RPC).
+            const logFilterText = document.getElementById('repo-config-log-filter')?.value ?? '';
+            const lfResp = await sendRpc({
+                jsonrpc: '2.0', id: nextId++, method: 'repoLogFilterSet',
+                params: { repo, text: logFilterText },
+            });
+            if (lfResp && lfResp.error) {
+                showToast(lfResp.error.message || 'Invalid log filter', 'error');
+                return;
+            }
+            // A changed filter invalidates any excerpts already shown.
+            logExcerptCache.clear();
+
             if (data && !data.error) {
                 repoConfigs[repo] = {
                     ignore_jobs: ignoreJobs,
@@ -1762,8 +1805,68 @@
         const _SVG_REVIEW = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M1.5 2.75C1.5 1.784 2.284 1 3.25 1h8.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 11.75 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H3.25a1.75 1.75 0 0 1-1.75-1.75Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h1.5a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h2.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>`;
         const _SVG_TAG    = `<svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M1 7.775V2.75C1 1.784 1.784 1 2.75 1h5.025c.464 0 .91.184 1.238.513l6.25 6.25c.683.682.683 1.79 0 2.474l-5.025 5.025a1.75 1.75 0 0 1-2.474 0l-6.25-6.25A1.752 1.752 0 0 1 1 7.775Zm1.5 0c0 .066.026.13.073.177l6.25 6.25a.25.25 0 0 0 .354 0l5.025-5.025a.25.25 0 0 0 0-.354l-6.25-6.25a.25.25 0 0 0-.177-.073H2.75a.25.25 0 0 0-.25.25ZM6 5a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/></svg>`;
 
+        // Render the (lazily-loaded) grepped failing-log excerpt under a check row.
+        function renderLogBlock(trackerId, runId) {
+            const key = `${trackerId}:${runId}`;
+            if (!logExpanded.has(key)) return '';
+            const ex = logExcerptCache.get(runId);
+            let body;
+            if (!ex || ex.loading) {
+                body = `<div class="log-excerpt-msg">Loading failing log…</div>`;
+            } else if (ex.error) {
+                body = `<div class="log-excerpt-msg log-excerpt-err">${escapeHtml(ex.error)}</div>`;
+            } else {
+                const lines = Array.isArray(ex.lines) ? ex.lines : [];
+                const head = ex.job_name ? `<div class="log-excerpt-job">${escapeHtml(ex.job_name)}</div>` : '';
+                const text = lines.length ? escapeHtml(lines.join('\n')) : '(no matching lines)';
+                const trunc = ex.truncated ? `<div class="log-excerpt-msg">… truncated — run <code>ghelper logs</code> for full output</div>` : '';
+                body = `${head}<pre class="log-excerpt-pre">${text}</pre>${trunc}`;
+            }
+            return `<div class="log-excerpt">${body}</div>`;
+        }
+
+        async function loadLogExcerpt(trackerId, runId) {
+            logExcerptCache.set(runId, { loading: true });
+            rerenderTrackerCard(trackerId);
+            let result;
+            try {
+                const data = await sendRpc({
+                    jsonrpc: '2.0', id: nextId++, method: 'trackerLogExcerpt',
+                    params: { tracker_id: trackerId, run_id: runId },
+                });
+                result = (data && data.result) ? data.result
+                    : { error: (data && data.error && data.error.message) || 'no response', lines: [] };
+            } catch (err) {
+                result = { error: String(err), lines: [] };
+            }
+            logExcerptCache.set(runId, result);
+            rerenderTrackerCard(trackerId);
+        }
+
+        function rerenderTrackerCard(id) {
+            const tracker = trackerRows.find(t => t.id == id);
+            const card = document.getElementById(`pr-card-${id}`);
+            if (tracker && card) card.outerHTML = renderTrackerRow(tracker);
+        }
+
         function buildChecksHtml(t, effectiveIgnore) {
             const jobs = Array.isArray(t.jobs) ? t.jobs : [];
+
+            // Auto-expand + lazily fetch the first failing CI's log once per tracker,
+            // so "the first failing CI's grepped result" shows without manual action.
+            if (!logAutoLoaded.has(t.id)) {
+                const firstFailed = jobs.find(j => {
+                    const conc = (j.conclusion || j.status || '').toLowerCase();
+                    return /failure|failed|error/.test(conc) && Number(j.id) > 0;
+                });
+                if (firstFailed) {
+                    logAutoLoaded.add(t.id);
+                    logExpanded.add(`${t.id}:${firstFailed.id}`);
+                    if (!logExcerptCache.has(Number(firstFailed.id))) {
+                        loadLogExcerpt(t.id, Number(firstFailed.id));
+                    }
+                }
+            }
             const cfg = repoConfigs[t.repo] || {};
             const isBp = Boolean(t.is_backport);
             const reqReviews = Number(isBp ? cfg.backport_required_reviews : cfg.required_reviews) || 0;
@@ -1820,7 +1923,13 @@
                 const nameHtml   = `<span class="check-name${ignoredClass}">${escapeHtml(j.name || 'workflow')}</span>`;
                 const detailHtml = detail ? `<span class="check-detail">${escapeHtml(detail)}</span>` : '';
                 const linkHtml   = j.url ? `<a href="${escapeHtml(j.url)}" target="_blank" rel="noopener noreferrer" class="check-link">Details →</a>` : '';
-                const row = `<div class="check-row ${rowCls}">${icon}${nameHtml}${detailHtml}${linkHtml}</div>`;
+                // Offer a grepped failing-log excerpt only on genuinely failed (non-ignored) runs.
+                const showLogToggle = isFailed && !(isIgnored && isFailed) && Number(j.id) > 0;
+                const logToggleHtml = showLogToggle
+                    ? `<button class="check-log-btn" data-tracker-id="${t.id}" data-action="toggle-log" data-run-id="${j.id}" title="Show grepped failing log">${logExpanded.has(`${t.id}:${j.id}`) ? '▾' : '▸'} log</button>`
+                    : '';
+                const row = `<div class="check-row ${rowCls}">${icon}${nameHtml}${detailHtml}${logToggleHtml}${linkHtml}</div>`
+                    + (showLogToggle ? renderLogBlock(t.id, Number(j.id)) : '');
 
                 if (isPassed || isSkipped || isCancelled || (isIgnored && isFailed)) passedRows.push(row);
                 else activeRows.push(row);
