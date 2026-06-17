@@ -4,8 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
+import ghelper.cli as cli
 from ghelper.cli import (
     _GrepSpec,
+    _apply_config_bundle,
+    _clean_log_text,
+    _config_bundle,
     _extract_log_lines,
     _log_filter_preview,
     _log_filter_to_struct,
@@ -133,6 +137,24 @@ def test_extract_log_lines_after_before_context():
     assert any(line.lstrip().startswith(">") or line.startswith(">") for line in rendered)
 
 
+def test_clean_log_text_strips_ansi_and_timestamps():
+    # Real GitHub job logs interleave ANSI codes (so "ERR spec" is really
+    # "ERR\x1b[0m \x1b[36mspec") and prefix every line with an ISO timestamp.
+    raw = "2026-06-16T11:26:05.2520732Z          ERR\x1b[0m \x1b[36mspec/02-integration/24-buffered_spec.lua\x1b[0m:283: boom"
+    cleaned = _clean_log_text(raw)
+    assert cleaned == "         ERR spec/02-integration/24-buffered_spec.lua:283: boom"
+    # The pattern from the bug report now matches the cleaned line.
+    spec = _parse_grep_spec(r"(FAIL|ERR) spec +10")
+    assert _extract_log_lines(cleaned, spec, color=False)
+
+
+def test_clean_log_text_enables_caret_anchored_patterns():
+    raw = "2026-06-16T11:26:05.0Z \x1b[1mFAIL\x1b[0m something broke"
+    cleaned = _clean_log_text(raw)
+    # ^-anchored pattern lines up with content, not the stripped timestamp.
+    assert _extract_log_lines(cleaned, _parse_grep_spec(r"^FAIL"), color=False)
+
+
 def test_extract_log_lines_whole_log_when_no_pattern():
     spec = _GrepSpec(None)
     rendered = _extract_log_lines(SAMPLE_LOG, spec, color=False)
@@ -161,6 +183,35 @@ def test_struct_to_log_filter_keeps_empty_override_as_whole_log():
     assert "=>" in text
     back = _log_filter_to_struct(text)
     assert back["jobs"][0]["has_override"] is True
+
+
+def test_config_bundle_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_CONFIG_PATH", tmp_path / "ghelper.json")
+    monkeypatch.setattr(cli, "_REPO_CONFIGS_PATH", tmp_path / "repo-configs.json")
+    bundle = {
+        "ghelper_config_version": 1,
+        "repo": "o/r",
+        "requirements": {
+            "ignore_jobs": ["lint"],
+            "required_reviews": 2,
+            "required_labels": ["ready"],
+            "backport_ignore_jobs": ["docs"],
+            "backport_required_reviews": 1,
+            "backport_required_labels": [],
+        },
+        "log_filter": "grep: ^\\s*FAIL\\b +40 -1\njob: ^build\n",
+    }
+    _apply_config_bundle("o/r", bundle)
+    out = _config_bundle("o/r")
+    assert out["requirements"] == bundle["requirements"]
+    assert out["log_filter"] == bundle["log_filter"]
+
+
+def test_apply_config_bundle_rejects_invalid_log_filter(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_CONFIG_PATH", tmp_path / "ghelper.json")
+    monkeypatch.setattr(cli, "_REPO_CONFIGS_PATH", tmp_path / "repo-configs.json")
+    with pytest.raises(Exception):
+        _apply_config_bundle("o/r", {"log_filter": "grep: (oops"})
 
 
 def test_log_filter_preview_reports_matches_and_errors():

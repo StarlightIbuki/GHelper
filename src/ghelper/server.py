@@ -1794,9 +1794,11 @@ class JSONRPCServer:
     ) -> dict[str, Any]:
         """Blocking: download the failed-job log for *run_id* and grep it.
 
-        Picks the failing job via the repo's log_filter job: selectors (the first
-        match is "the first failing CI"), downloads only that job's log archive,
-        and returns the grepped lines.  Runs off the event loop via to_thread.
+        Walks the failing jobs in log_filter priority order and returns the first
+        one whose grep actually produces matching lines — i.e. if a job's pattern
+        finds nothing, it falls through to the next job. If none match, the first
+        job's (empty) result is returned so the UI shows "(no matching lines)".
+        Runs off the event loop via to_thread.
         """
         log_filter = _parse_log_filter(log_filter_text)
         gh = self._gh or (Github(self.token) if self.token else None)
@@ -1819,24 +1821,41 @@ class JSONRPCServer:
         if not selected:
             return {"run_id": run_id, "run_name": getattr(run, "name", ""), "lines": [],
                     "error": "no failed jobs"}
-        job, spec = selected[0]
-        try:
-            blob = _download_binary(_job_logs_url(job), self.token or "")
-            lines: list[str] = []
-            for _name, log_text in _decode_log_archive(blob):
-                lines.extend(_extract_log_lines(log_text, spec, color=False))
-        except Exception as exc:
-            return {"run_id": run_id, "job_name": getattr(job, "name", ""),
-                    "error": f"cannot fetch log: {exc}", "lines": []}
+
+        run_name = str(getattr(run, "name", "") or "")
         max_lines = 500
-        truncated = len(lines) > max_lines
-        return {
-            "run_id": run_id,
-            "run_name": str(getattr(run, "name", "") or ""),
-            "job_name": str(getattr(job, "name", "") or ""),
-            "lines": lines[:max_lines],
-            "truncated": truncated,
-        }
+        # Cap how many job logs we download per call when falling through, so a run
+        # with many same-named jobs (e.g. dozens of busted runners) can't trigger an
+        # unbounded download burst.
+        max_jobs = 10
+        first_result: Optional[dict[str, Any]] = None
+        for job, spec in selected[:max_jobs]:
+            job_name = str(getattr(job, "name", "") or "")
+            try:
+                blob = _download_binary(_job_logs_url(job), self.token or "")
+                lines: list[str] = []
+                for _name, log_text in _decode_log_archive(blob):
+                    lines.extend(_extract_log_lines(log_text, spec, color=False))
+            except Exception as exc:
+                if first_result is None:
+                    first_result = {"run_id": run_id, "run_name": run_name,
+                                    "job_name": job_name, "error": f"cannot fetch log: {exc}", "lines": []}
+                continue
+            result = {
+                "run_id": run_id,
+                "run_name": run_name,
+                "job_name": job_name,
+                "lines": lines[:max_lines],
+                "truncated": len(lines) > max_lines,
+            }
+            if lines:
+                return result  # this job's pattern matched — show it
+            if first_result is None:
+                first_result = result  # remember the first job in case nothing matches
+        # Nothing matched any selected job's pattern — surface the first job so the
+        # UI shows it with "(no matching lines)" rather than an error.
+        return first_result if first_result is not None else {
+            "run_id": run_id, "run_name": run_name, "lines": [], "error": "no failed jobs"}
 
     async def _tracker_log_excerpt(
         self,

@@ -477,16 +477,16 @@
                 </div>
 
                 <div class="cfg-panel" data-panel="io" style="display:none;flex-direction:column;gap:10px;">
-                    <label class="lf-label">Export log filter <span class="lf-hint">(the current form, as DSL text)</span></label>
-                    <pre id="lf-export-text" class="lf-generated" style="max-height:160px;"></pre>
+                    <label class="lf-label">Export config <span class="lf-hint">(requirements + log filter, as JSON)</span></label>
+                    <pre id="lf-export-text" class="lf-generated" style="max-height:200px;"></pre>
                     <div style="display:flex;gap:8px;">
-                        <button type="button" class="secondary btn-sm" onclick="lfCopyExport()">Copy</button>
-                        <button type="button" class="secondary btn-sm" onclick="lfDownloadExport()">Download .conf</button>
+                        <button type="button" class="secondary btn-sm" onclick="cfgCopyExport()">Copy</button>
+                        <button type="button" class="secondary btn-sm" onclick="cfgDownloadExport()">Download .json</button>
                     </div>
-                    <label class="lf-label" style="margin-top:8px;">Import log filter <span class="lf-hint">(paste DSL, then load it into the form)</span></label>
-                    <textarea id="lf-import-text" spellcheck="false" class="lf-input-mono" style="min-height:120px;white-space:pre;" placeholder="# grep: ^\s*FAIL\b  +40 -1&#10;# job: .*degraphql.*"></textarea>
+                    <label class="lf-label" style="margin-top:8px;">Import config <span class="lf-hint">(paste exported JSON, then load it into the form)</span></label>
+                    <textarea id="lf-import-text" spellcheck="false" class="lf-input-mono" style="min-height:120px;white-space:pre;" placeholder='{ "requirements": { "ignore_jobs": ["lint"] }, "log_filter": "grep: ^\s*FAIL\b +40 -1" }'></textarea>
                     <div id="lf-import-msg" class="lf-msg"></div>
-                    <button type="button" class="secondary btn-sm" style="align-self:flex-start;" onclick="lfImportFromText()">Load into form</button>
+                    <button type="button" class="secondary btn-sm" style="align-self:flex-start;" onclick="cfgImportFromText()">Load into form</button>
                 </div>
             </div>
             <div class="wiz-footer">
@@ -824,58 +824,117 @@
             document.querySelectorAll('#repoConfigBackdrop .cfg-panel').forEach(p => {
                 p.style.display = (p.dataset.panel === name) ? 'flex' : 'none';
             });
+            // Rebuild the export bundle from the live form whenever the tab opens.
+            if (name === 'io') cfgRefreshExport();
         }
         window.cfgShowTab = cfgShowTab;
 
+        // Current log-filter DSL (preview keeps lf-generated in sync with the form).
         function lfExportText() {
-            // Reflect what is currently in the form (preview keeps these in sync).
             return document.getElementById('lf-generated').textContent || '';
         }
 
-        async function lfCopyExport() {
-            const text = lfExportText();
+        // Read the Requirements tab inputs into the server's repo-config schema.
+        function cfgReadRequirementsForm() {
+            const lines = id => (document.getElementById(id)?.value ?? '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+            const num = id => Math.max(0, parseInt(document.getElementById(id)?.value ?? '0', 10) || 0);
+            return {
+                ignore_jobs: lines('repo-config-ignore'),
+                required_reviews: num('repo-config-req-reviews'),
+                required_labels: lines('repo-config-req-labels'),
+                backport_ignore_jobs: lines('repo-config-bp-ignore'),
+                backport_required_reviews: num('repo-config-bp-req-reviews'),
+                backport_required_labels: lines('repo-config-bp-req-labels'),
+            };
+        }
+
+        function cfgFillRequirementsForm(req) {
+            req = req || {};
+            document.getElementById('repo-config-ignore').value = (req.ignore_jobs || []).join('\n');
+            document.getElementById('repo-config-req-reviews').value = req.required_reviews ?? 0;
+            document.getElementById('repo-config-req-labels').value = (req.required_labels || []).join('\n');
+            document.getElementById('repo-config-bp-ignore').value = (req.backport_ignore_jobs || []).join('\n');
+            document.getElementById('repo-config-bp-req-reviews').value = req.backport_required_reviews ?? 0;
+            document.getElementById('repo-config-bp-req-labels').value = (req.backport_required_labels || []).join('\n');
+        }
+
+        // Full export bundle reflecting the current (possibly unsaved) form state.
+        function cfgBuildBundle() {
+            lfReadForm();
+            return {
+                ghelper_config_version: 1,
+                repo: _repoConfigActiveRepo || '',
+                requirements: cfgReadRequirementsForm(),
+                log_filter: lfExportText(),
+            };
+        }
+
+        function cfgRefreshExport() {
+            document.getElementById('lf-export-text').textContent = JSON.stringify(cfgBuildBundle(), null, 2);
+        }
+
+        async function cfgCopyExport() {
             try {
-                await navigator.clipboard.writeText(text);
-                showToast('Log filter copied', 'success', 1500);
+                await navigator.clipboard.writeText(document.getElementById('lf-export-text').textContent || '');
+                showToast('Config copied', 'success', 1500);
             } catch (e) {
                 showToast('Copy failed — select and copy manually', 'error');
             }
         }
-        window.lfCopyExport = lfCopyExport;
+        window.cfgCopyExport = cfgCopyExport;
 
-        function lfDownloadExport() {
-            const text = lfExportText();
+        function cfgDownloadExport() {
+            const text = document.getElementById('lf-export-text').textContent || '';
             const repo = (_repoConfigActiveRepo || 'repo').replace(/[^\w.-]+/g, '-');
-            const blob = new Blob([text], { type: 'text/plain' });
+            const blob = new Blob([text], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${repo}.log-filter.conf`;
+            a.download = `${repo}.ghelper-config.json`;
             document.body.appendChild(a);
             a.click();
             a.remove();
             URL.revokeObjectURL(url);
         }
-        window.lfDownloadExport = lfDownloadExport;
+        window.cfgDownloadExport = cfgDownloadExport;
 
-        async function lfImportFromText() {
-            const text = document.getElementById('lf-import-text').value;
+        async function cfgImportFromText() {
+            const raw = document.getElementById('lf-import-text').value;
             const msg = document.getElementById('lf-import-msg');
-            const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'logFilterParse', params: { text } });
+            let bundle = null;
+            let asDsl = false;
+            try {
+                bundle = JSON.parse(raw);
+            } catch (e) {
+                asDsl = true;  // not JSON — accept a bare log-filter DSL too
+            }
+            let dslText = '';
+            if (asDsl) {
+                dslText = raw;
+            } else if (bundle && typeof bundle === 'object') {
+                if (bundle.requirements) cfgFillRequirementsForm(bundle.requirements);
+                dslText = (typeof bundle.log_filter === 'string') ? bundle.log_filter : '';
+            } else {
+                msg.textContent = 'Invalid: expected a JSON config object';
+                msg.className = 'lf-msg lf-msg-err';
+                return;
+            }
+            // Load the log filter into the form (validated server-side).
+            const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'logFilterParse', params: { text: dslText } });
             const res = (data && data.result) || { ok: false, error: 'import failed' };
             if (!res.ok) {
-                msg.textContent = `Invalid: ${res.error}`;
+                msg.textContent = `Invalid log filter: ${res.error}`;
                 msg.className = 'lf-msg lf-msg-err';
                 return;
             }
             lfState = lfNormalizeStruct(res.struct);
             lfRenderForm();
             lfSchedulePreview();
-            msg.textContent = 'Loaded into the form — review, then Save.';
+            msg.textContent = asDsl ? 'Loaded log filter — review, then Save.' : 'Loaded config — review, then Save.';
             msg.className = 'lf-msg';
-            cfgShowTab('logfilter');
+            cfgShowTab(asDsl ? 'logfilter' : 'requirements');
         }
-        window.lfImportFromText = lfImportFromText;
+        window.cfgImportFromText = cfgImportFromText;
 
         function lfSchedulePreview() {
             if (lfPreviewTimer) clearTimeout(lfPreviewTimer);
@@ -891,8 +950,10 @@
             lfLastOk = !!res.ok;
             const genText = res.text || '(empty — whole log, all jobs)';
             document.getElementById('lf-generated').textContent = genText;
-            // Keep the Import/Export tab's export view in sync with the live form.
-            document.getElementById('lf-export-text').textContent = res.text || '';
+            // If the Import/Export tab is open, refresh the bundle so it reflects
+            // the freshly-serialized log filter.
+            const ioPanel = document.querySelector('#repoConfigBackdrop .cfg-panel[data-panel="io"]');
+            if (ioPanel && ioPanel.style.display !== 'none') cfgRefreshExport();
 
             const gEl = document.getElementById('lf-global-msg');
             const gInput = document.getElementById('lf-global-pattern');

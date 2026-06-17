@@ -124,6 +124,10 @@ _BACKPORT_SOURCE_PR_RE = re.compile(
 )
 
 _CONFIG_PATH = Path.home() / ".ghelper.json"
+# Per-repo "requirements" (ignore jobs / reviews / labels, incl. backport variants)
+# enforced by the server / web UI. Kept separate from ~/.ghelper.json so the export
+# bundle can mirror exactly what the running server reads.
+_REPO_CONFIGS_PATH = Path.home() / ".ghelper-repo-configs.json"
 _PR_STATUS_CACHE_PATH = Path.home() / ".ghelper-cache.json"
 _PR_STATUS_CACHE_TTL_SECONDS = 3600  # 1 hour
 _SESSION_PATH = Path.home() / ".ghelper-sessions.json"
@@ -520,6 +524,84 @@ def _set_repo_log_filter(repo: str, text: str) -> None:
     _save_user_config(cfg)
 
 
+# ---------------------------------------------------------------------------
+# Per-repo "requirements" (server repo-config store) + full export bundle
+# ---------------------------------------------------------------------------
+
+def _load_repo_configs_file() -> dict[str, Any]:
+    if not _REPO_CONFIGS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(_REPO_CONFIGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_repo_configs_file(data: dict[str, Any]) -> None:
+    _REPO_CONFIGS_PATH.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _normalize_requirements(cfg: Any) -> dict[str, Any]:
+    """Coerce a requirements dict to the server's repo-config schema."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+
+    def _strlist(value: Any) -> list[str]:
+        return [str(x).strip() for x in (value if isinstance(value, list) else []) if str(x).strip()]
+
+    def _nonneg(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "ignore_jobs": _strlist(cfg.get("ignore_jobs")),
+        "required_reviews": _nonneg(cfg.get("required_reviews")),
+        "required_labels": _strlist(cfg.get("required_labels")),
+        "backport_ignore_jobs": _strlist(cfg.get("backport_ignore_jobs")),
+        "backport_required_reviews": _nonneg(cfg.get("backport_required_reviews")),
+        "backport_required_labels": _strlist(cfg.get("backport_required_labels")),
+    }
+
+
+def _get_repo_requirements(repo: str) -> dict[str, Any]:
+    return _normalize_requirements(_load_repo_configs_file().get(str(repo or "").strip(), {}))
+
+
+def _set_repo_requirements(repo: str, requirements: Any) -> None:
+    repo = str(repo or "").strip()
+    if not repo:
+        return
+    data = _load_repo_configs_file()
+    data[repo] = _normalize_requirements(requirements)
+    _save_repo_configs_file(data)
+
+
+def _config_bundle(repo: str) -> dict[str, Any]:
+    """Full per-repo config (requirements + log filter) for export."""
+    return {
+        "ghelper_config_version": 1,
+        "repo": str(repo or "").strip(),
+        "requirements": _get_repo_requirements(repo),
+        "log_filter": _get_repo_log_filter(repo),
+    }
+
+
+def _apply_config_bundle(repo: str, bundle: Any) -> None:
+    """Apply an exported config bundle to *repo* (validates the log filter)."""
+    if not isinstance(bundle, dict):
+        raise click.BadParameter("config bundle must be a JSON object")
+    if "requirements" in bundle:
+        _set_repo_requirements(repo, bundle.get("requirements"))
+    if "log_filter" in bundle:
+        text = bundle.get("log_filter") or ""
+        if not isinstance(text, str):
+            raise click.BadParameter("log_filter must be a string")
+        _parse_log_filter(text)  # validate before persisting
+        _set_repo_log_filter(repo, text)
+
+
 def _target_repo(target: str, repo_opt: Optional[str]) -> Optional[str]:
     m = _URL_RE.search(target)
     if m:
@@ -879,6 +961,24 @@ def _download_binary(url: str, token: str) -> bytes:
         raise click.ClickException(f"Failed to fetch logs from {url}: {exc.reason}") from exc
 
 
+# ANSI/VT100 escape sequences (colors, cursor moves) embedded in CI logs.
+_ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+# Per-line ISO-8601 timestamp prefix GitHub adds to raw job logs, e.g.
+# "2026-06-16T11:26:05.2520732Z ".
+_LOG_TS_RE = re.compile(r"(?m)^\d{4}-\d{2}-\d{2}T[0-9:.]+Z ")
+
+
+def _clean_log_text(text: str) -> str:
+    """Normalize a raw CI log for grepping/display.
+
+    Strips ANSI color/escape codes and GitHub's per-line timestamp prefix so that
+    patterns match the visible text (e.g. ``ERR spec`` instead of the raw
+    ``ERR\\x1b[0m \\x1b[36mspec``) and ``^``-anchored patterns line up with the
+    actual log content rather than the timestamp.
+    """
+    return _LOG_TS_RE.sub("", _ANSI_RE.sub("", text))
+
+
 def _decode_log_archive(blob: bytes) -> list[tuple[str, str]]:
     if blob[:2] == b"PK":
         entries: list[tuple[str, str]] = []
@@ -887,9 +987,9 @@ def _decode_log_archive(blob: bytes) -> list[tuple[str, str]]:
                 if name.endswith("/"):
                     continue
                 with archive.open(name) as handle:
-                    entries.append((name, handle.read().decode("utf-8", errors="replace")))
+                    entries.append((name, _clean_log_text(handle.read().decode("utf-8", errors="replace"))))
         return entries
-    return [("workflow.log", blob.decode("utf-8", errors="replace"))]
+    return [("workflow.log", _clean_log_text(blob.decode("utf-8", errors="replace")))]
 
 
 def _compile_regex(pattern: Optional[str]) -> Optional[re.Pattern[str]]:
@@ -1857,6 +1957,37 @@ def config_import_log_filter_cmd(repo_opt: str, source: Any) -> None:
     _parse_log_filter(text)
     _set_repo_log_filter(repo_opt, text)
     click.echo(f"Imported log filter for {repo_opt} into {_CONFIG_PATH}")
+
+
+@config_group.command("export")
+@click.option("-R", "--repo", "repo_opt", required=True, metavar="OWNER/REPO", help="Repository to export the config for.")
+def config_export_cmd(repo_opt: str) -> None:
+    """Print the repo's full config (requirements + log filter) as JSON.
+
+    \b
+    Includes the ignore/review/label requirements and the failed-CI log filter.
+    Pipe to a file to share or back up:
+      ghelper config export -R owner/repo > config.json
+    """
+    click.echo(json.dumps(_config_bundle(repo_opt), indent=2, sort_keys=True))
+
+
+@config_group.command("import")
+@click.option("-R", "--repo", "repo_opt", required=True, metavar="OWNER/REPO", help="Repository to import the config into.")
+@click.argument("source", type=click.File("r"), default="-", metavar="[FILE]")
+def config_import_cmd(repo_opt: str, source: Any) -> None:
+    """Import a full config bundle (JSON) from FILE or stdin (validated).
+
+    \b
+      ghelper config import -R owner/repo config.json
+      cat config.json | ghelper config import -R owner/repo
+    """
+    try:
+        bundle = json.loads(source.read())
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"invalid JSON: {exc}")
+    _apply_config_bundle(repo_opt, bundle)
+    click.echo(f"Imported config for {repo_opt}")
 
 
 # ---------------------------------------------------------------------------
@@ -4031,11 +4162,31 @@ def failed_logs_cmd(
                 continue
 
             any_failed_jobs = True
-            click.echo(f"{_short_target(run.html_url)}")
+            run_header_shown = False
+            shown_in_run = 0
 
             for job_index, (job, spec) in enumerate(selected, 1):
-                click.echo(f"  job: {job.name} ({job.conclusion})")
+                click.echo(f"  Downloading logs ({job_index}/{len(selected)}) for {job.name}...", err=True)
+                blob = _download_binary(_job_logs_url(job), token)
+                click.echo(f"    Parsing logs...", err=True)
+                file_renders = [
+                    (file_name, _extract_log_lines(log_text, spec))
+                    for file_name, log_text in _decode_log_archive(blob)
+                ]
+                has_match = any(rendered for _, rendered in file_renders)
 
+                # Fall through to the next job when a grep pattern is set but the
+                # job's log produced no match.
+                if spec.pattern is not None and not has_match:
+                    click.echo(f"    {job.name}: no lines matched — trying next job", err=True)
+                    continue
+
+                if not run_header_shown:
+                    click.echo(f"{_short_target(run.html_url)}")
+                    run_header_shown = True
+                shown_in_run += 1
+
+                click.echo(f"  job: {job.name} ({job.conclusion})")
                 failed_steps = [
                     step for step in (job.steps or [])
                     if (step.conclusion or "").lower() in _RETRY_CONCLUSIONS
@@ -4047,17 +4198,19 @@ def failed_logs_cmd(
                 else:
                     click.echo("    failed steps: (none reported by API)")
 
-                click.echo(f"    Downloading logs ({job_index}/{len(selected)})...", err=True)
-                blob = _download_binary(_job_logs_url(job), token)
-                click.echo(f"    Parsing logs...", err=True)
-                for file_name, log_text in _decode_log_archive(blob):
+                for file_name, rendered in file_renders:
                     click.echo(f"    log: {file_name}")
-                    rendered = _extract_log_lines(log_text, spec)
-                    if spec.pattern is not None and not rendered:
+                    if not rendered:
                         click.echo("      (no matching lines)")
                         continue
                     for line in rendered:
                         click.echo(f"      {line}")
+
+            if shown_in_run == 0:
+                click.echo(
+                    f"{_short_target(run.html_url)}: no lines matched the filter "
+                    f"in {len(selected)} selected job(s)"
+                )
 
     if not any_failed_jobs:
         click.echo("No failed jobs found in the requested targets.")
