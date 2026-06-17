@@ -2213,6 +2213,16 @@ def create_app(server: JSONRPCServer) -> web.Application:
     app.router.add_get("/health", health)
     app.router.add_get("/debug/state", debug_state)
     app.router.add_static("/static", _WEB_DIR / "static")
+
+    # Force browsers to revalidate static assets (e.g. common.js) on every load.
+    # Without this aiohttp's add_static omits Cache-Control, so browsers apply
+    # heuristic freshness and keep running a stale cached copy after an update —
+    # which makes bug fixes in the JS appear to "still happen" until a hard reload.
+    async def _no_cache_static(request, response):
+        if request.path.startswith("/static"):
+            response.headers["Cache-Control"] = "no-cache"
+
+    app.on_response_prepare.append(_no_cache_static)
     return app
 
 

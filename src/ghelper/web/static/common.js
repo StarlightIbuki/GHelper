@@ -5,7 +5,11 @@ function escapeHtml(v) {
 }
 
 function normalizeUrl(url) {
-    return String(url || '').trim().replace(/[?#].*$/, '').replace(/\/$/, '');
+    const trimmed = String(url || '').trim().replace(/[?#].*$/, '').replace(/\/$/, '');
+    // GitHub treats owner/repo as case-insensitive, so canonicalize that segment
+    // to lowercase to match the server (_normalize_target_url) and keep tracked
+    // PR comparisons consistent regardless of input casing.
+    return trimmed.replace(/^(https?:\/\/github\.com\/)([^/\s]+\/[^/\s]+)(\/pull\/\d+)/i, (m, prefix, repo, suffix) => prefix + repo.toLowerCase() + suffix);
 }
 
 function extractRepoFromUrl(url) {
