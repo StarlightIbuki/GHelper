@@ -113,6 +113,23 @@
         .log-excerpt-pre { margin: 0; max-height: 320px; overflow: auto; font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.45; white-space: pre; color: #c9d1d9; }
         .log-excerpt-msg { color: #8b949e; font-size: 11px; padding: 2px 0; }
         .log-excerpt-err { color: #ff7b72; }
+        /* Structured log-filter form (repo config modal) */
+        .lf-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+        .lf-hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); }
+        .lf-input-mono { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; font-size: 12px; font-family: var(--font-mono, monospace); background: #fff; }
+        .lf-input-mono.lf-invalid { border-color: #cf222e; background: #fff5f5; }
+        .lf-num-row { display: flex; gap: 16px; align-items: center; }
+        .lf-num-label { font-size: 11px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+        .lf-num { width: 64px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; font-size: 12px; background: #fff; }
+        .lf-msg { font-size: 11px; min-height: 14px; color: #1a7f37; }
+        .lf-msg.lf-msg-err { color: #cf222e; }
+        .lf-msg.lf-msg-muted { color: #8b949e; }
+        .lf-job-rule { border: 1px solid var(--line); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; background: #fafbfc; }
+        .lf-job-top { display: flex; gap: 6px; align-items: center; }
+        .lf-job-override-fields { display: flex; flex-direction: column; gap: 6px; padding-left: 18px; border-left: 2px solid var(--line); }
+        .lf-job-rm { flex-shrink: 0; background: none; border: 1px solid var(--line); border-radius: 5px; color: #57606a; cursor: pointer; padding: 3px 8px; font-size: 12px; }
+        .lf-job-rm:hover { color: #cf222e; border-color: #cf222e; }
+        .lf-generated { margin: 4px 0 0; padding: 7px 9px; background: #f6f8fa; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; font-family: var(--font-mono, monospace); white-space: pre-wrap; word-break: break-all; color: #57606a; max-height: 120px; overflow: auto; }
         .check-section-hdr { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 10px; background: #f6f8fa; border: none; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; color: #57606a; cursor: pointer; text-align: left; }
         .check-section-hdr:hover { background: #eaeef2; }
         .check-section-hdr:first-child { border-top: none; }
@@ -426,8 +443,24 @@
                 <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Required labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></label>
                 <textarea id="repo-config-bp-req-labels" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:40px;max-height:100px;background:#fff;" placeholder="e.g. backport-approved"></textarea>
                 <div style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);padding-bottom:6px;margin-top:6px;">Failed-CI log filter</div>
-                <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Log extraction config <span style="font-weight:400;text-transform:none;letter-spacing:0">(grep: / job: DSL — # comments)</span></label>
-                <textarea id="repo-config-log-filter" spellcheck="false" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--font-mono,monospace);resize:vertical;min-height:120px;max-height:260px;background:#fff;white-space:pre;" placeholder="# grep: ^\s*FAIL\b  +40 -1&#10;# job: .*degraphql.*  =>  ^\s*FAIL\b.*(?:\n(?!.*__________).*)*"></textarea>
+
+                <label class="lf-label">Global pattern <span class="lf-hint">(regex; empty = whole log)</span></label>
+                <input id="lf-global-pattern" type="text" spellcheck="false" class="lf-input-mono" placeholder="e.g. ^\s*FAIL\b">
+                <div class="lf-num-row">
+                    <label class="lf-num-label">Lines before <input id="lf-global-before" type="number" min="0" max="500" step="1" value="0" class="lf-num"></label>
+                    <label class="lf-num-label">Lines after <input id="lf-global-after" type="number" min="0" max="500" step="1" value="0" class="lf-num"></label>
+                </div>
+                <div id="lf-global-msg" class="lf-msg"></div>
+
+                <label class="lf-label">Per-job overrides <span class="lf-hint">(priority order; first match = first failing CI shown)</span></label>
+                <div id="lf-jobs"></div>
+                <button type="button" class="secondary btn-sm" style="align-self:flex-start;" onclick="lfAddJobRule()">+ Add job rule</button>
+                <datalist id="lf-job-names"></datalist>
+
+                <details style="margin-top:4px;">
+                    <summary class="lf-hint" style="cursor:pointer;">Generated config (saved as text)</summary>
+                    <pre id="lf-generated" class="lf-generated"></pre>
+                </details>
             </div>
             <div class="wiz-footer">
                 <button class="secondary" onclick="closeRepoConfigModal()">Cancel</button>
@@ -619,14 +652,197 @@
             document.getElementById('repo-config-bp-ignore').value = (cfg.backport_ignore_jobs || []).join('\n');
             document.getElementById('repo-config-bp-req-reviews').value = cfg.backport_required_reviews ?? 0;
             document.getElementById('repo-config-bp-req-labels').value = (cfg.backport_required_labels || []).join('\n');
-            // The log filter lives in ~/.ghelper.json (separate store) — fetch on open.
-            const lfEl = document.getElementById('repo-config-log-filter');
-            lfEl.value = '';
-            const lfData = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'repoLogFilterGet', params: { repo } });
-            if (lfData && lfData.result) lfEl.value = lfData.result.log_filter || '';
+            // Show the modal immediately with an empty form, then load the log
+            // filter asynchronously. Awaiting the fetch before showing would let a
+            // slow in-flight log download (queued ahead of us) block the modal.
+            lfState = { global: { pattern: '', before: 0, after: 0 }, jobs: [] };
+            lfJobNames = lfGatherJobNames(repo);
+            lfRenderJobNameOptions();
+            lfRenderForm();
+            document.getElementById('lf-global-msg').textContent = 'Loading…';
+            document.getElementById('lf-global-msg').className = 'lf-msg lf-msg-muted';
             repoConfigBackdropEl.hidden = false;
+
+            // The log filter lives in ~/.ghelper.json (separate store).
+            const lfData = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'repoLogFilterGetStructured', params: { repo } });
+            if (_repoConfigActiveRepo !== repo) return;  // modal closed/switched while loading
+            if (lfData && lfData.result && lfData.result.struct) lfState = lfNormalizeStruct(lfData.result.struct);
+            lfRenderForm();
+            lfSchedulePreview();
         }
         window.openRepoConfigModal = openRepoConfigModal;
+
+        // ── Structured log-filter form ──────────────────────────────────────
+        let lfState = { global: { pattern: '', before: 0, after: 0 }, jobs: [] };
+        let lfJobNames = [];
+        let lfPreviewTimer = null;
+        let lfLastOk = true;
+
+        function lfNormalizeStruct(s) {
+            const g = (s && s.global) || {};
+            return {
+                global: { pattern: g.pattern || '', before: Number(g.before) || 0, after: Number(g.after) || 0 },
+                jobs: (Array.isArray(s && s.jobs) ? s.jobs : []).map(j => ({
+                    name: j.name || '',
+                    has_override: !!j.has_override,
+                    pattern: j.pattern || '',
+                    before: Number(j.before) || 0,
+                    after: Number(j.after) || 0,
+                })),
+            };
+        }
+
+        // Candidate job names = individual failing-job names seen across this repo's trackers
+        // (these are what job: patterns are matched against).
+        function lfGatherJobNames(repo) {
+            const names = new Set();
+            for (const t of trackerRows) {
+                if ((t.repo || '') !== repo) continue;
+                for (const j of (t.jobs || [])) {
+                    for (const fn of (j.failed_jobs || [])) { if (fn) names.add(fn); }
+                }
+            }
+            return [...names].sort();
+        }
+
+        function lfRenderJobNameOptions() {
+            const dl = document.getElementById('lf-job-names');
+            dl.innerHTML = lfJobNames.map(n => `<option value="${escapeHtml(n)}"></option>`).join('');
+        }
+
+        function lfRenderForm() {
+            document.getElementById('lf-global-pattern').value = lfState.global.pattern;
+            document.getElementById('lf-global-before').value = lfState.global.before;
+            document.getElementById('lf-global-after').value = lfState.global.after;
+            const host = document.getElementById('lf-jobs');
+            host.innerHTML = lfState.jobs.map((job, i) => `
+                <div class="lf-job-rule" data-idx="${i}">
+                    <div class="lf-job-top">
+                        <input class="lf-input-mono lf-job-name" type="text" list="lf-job-names" spellcheck="false"
+                               placeholder="job name regex e.g. .*degraphql.*" value="${escapeHtml(job.name)}">
+                        <button type="button" class="lf-job-rm" title="Remove rule" onclick="lfRemoveJobRule(${i})">✕</button>
+                    </div>
+                    <div class="lf-msg lf-msg-muted lf-job-matches" data-idx="${i}"></div>
+                    <label style="font-size:11px;display:flex;gap:6px;align-items:center;">
+                        <input type="checkbox" class="lf-job-override" ${job.has_override ? 'checked' : ''}> Override grep for this job
+                    </label>
+                    <div class="lf-job-override-fields" ${job.has_override ? '' : 'hidden'}>
+                        <input class="lf-input-mono lf-job-pattern" type="text" spellcheck="false"
+                               placeholder="grep regex (empty = whole log)" value="${escapeHtml(job.pattern)}">
+                        <div class="lf-num-row">
+                            <label class="lf-num-label">before <input class="lf-num lf-job-before" type="number" min="0" max="500" step="1" value="${job.before}"></label>
+                            <label class="lf-num-label">after <input class="lf-num lf-job-after" type="number" min="0" max="500" step="1" value="${job.after}"></label>
+                        </div>
+                    </div>
+                </div>`).join('') || `<div class="lf-msg lf-msg-muted">No per-job rules — every failed job uses the global pattern.</div>`;
+        }
+
+        function lfReadForm() {
+            lfState.global = {
+                pattern: document.getElementById('lf-global-pattern').value,
+                before: Math.max(0, parseInt(document.getElementById('lf-global-before').value, 10) || 0),
+                after: Math.max(0, parseInt(document.getElementById('lf-global-after').value, 10) || 0),
+            };
+            const rules = [];
+            document.querySelectorAll('#lf-jobs .lf-job-rule').forEach(el => {
+                rules.push({
+                    name: el.querySelector('.lf-job-name').value,
+                    has_override: el.querySelector('.lf-job-override').checked,
+                    pattern: el.querySelector('.lf-job-pattern')?.value || '',
+                    before: Math.max(0, parseInt(el.querySelector('.lf-job-before')?.value, 10) || 0),
+                    after: Math.max(0, parseInt(el.querySelector('.lf-job-after')?.value, 10) || 0),
+                });
+            });
+            lfState.jobs = rules;
+        }
+
+        function lfAddJobRule() {
+            lfReadForm();
+            lfState.jobs.push({ name: '', has_override: false, pattern: '', before: 0, after: 0 });
+            lfRenderForm();
+            lfSchedulePreview();
+        }
+        window.lfAddJobRule = lfAddJobRule;
+
+        function lfRemoveJobRule(i) {
+            lfReadForm();
+            lfState.jobs.splice(i, 1);
+            lfRenderForm();
+            lfSchedulePreview();
+        }
+        window.lfRemoveJobRule = lfRemoveJobRule;
+
+        // React to edits within the form (delegated input/change handlers).
+        document.getElementById('repoConfigBackdrop').addEventListener('input', e => {
+            if (e.target.closest('#lf-global-pattern, #lf-global-before, #lf-global-after, #lf-jobs')) {
+                lfReadForm();
+                lfSchedulePreview();
+            }
+        });
+        document.getElementById('repoConfigBackdrop').addEventListener('change', e => {
+            if (e.target.classList && e.target.classList.contains('lf-job-override')) {
+                lfReadForm();
+                lfRenderForm();        // show/hide the override fields
+                lfSchedulePreview();
+            }
+        });
+
+        function lfSchedulePreview() {
+            if (lfPreviewTimer) clearTimeout(lfPreviewTimer);
+            lfPreviewTimer = setTimeout(lfRunPreview, 250);
+        }
+
+        async function lfRunPreview() {
+            const data = await sendRpc({
+                jsonrpc: '2.0', id: nextId++, method: 'logFilterPreview',
+                params: { struct: lfState, job_names: lfJobNames },
+            });
+            const res = (data && data.result) || { ok: false, error: 'preview failed', jobs: [], global_error: '', text: '' };
+            lfLastOk = !!res.ok;
+            document.getElementById('lf-generated').textContent = res.text || '(empty — whole log, all jobs)';
+
+            const gEl = document.getElementById('lf-global-msg');
+            const gInput = document.getElementById('lf-global-pattern');
+            if (res.global_error) {
+                gEl.textContent = `Invalid regex: ${res.global_error}`;
+                gEl.className = 'lf-msg lf-msg-err';
+                gInput.classList.add('lf-invalid');
+            } else {
+                gEl.textContent = lfState.global.pattern ? 'Valid pattern' : 'Empty — shows the whole log';
+                gEl.className = 'lf-msg' + (lfState.global.pattern ? '' : ' lf-msg-muted');
+                gInput.classList.remove('lf-invalid');
+            }
+
+            (res.jobs || []).forEach((jr, i) => {
+                const msgEl = document.querySelector(`.lf-job-matches[data-idx="${i}"]`);
+                const rule = document.querySelector(`.lf-job-rule[data-idx="${i}"]`);
+                if (!msgEl) return;
+                const nameInput = rule?.querySelector('.lf-job-name');
+                if (jr.error) {
+                    msgEl.textContent = jr.error;
+                    msgEl.className = 'lf-msg lf-msg-err lf-job-matches';
+                    nameInput?.classList.add('lf-invalid');
+                } else if (!jr.name) {
+                    msgEl.textContent = 'Enter a job-name regex';
+                    msgEl.className = 'lf-msg lf-msg-muted lf-job-matches';
+                    nameInput?.classList.remove('lf-invalid');
+                } else if (!lfJobNames.length) {
+                    msgEl.textContent = 'No failing jobs seen yet to match against';
+                    msgEl.className = 'lf-msg lf-msg-muted lf-job-matches';
+                    nameInput?.classList.remove('lf-invalid');
+                } else if ((jr.matches || []).length) {
+                    const shown = jr.matches.slice(0, 4).join(', ');
+                    const extra = jr.matches.length > 4 ? ` +${jr.matches.length - 4} more` : '';
+                    msgEl.textContent = `Matches ${jr.matches.length}: ${shown}${extra}`;
+                    msgEl.className = 'lf-msg lf-job-matches';
+                    nameInput?.classList.remove('lf-invalid');
+                } else {
+                    msgEl.textContent = 'Matches no current failing job';
+                    msgEl.className = 'lf-msg lf-msg-err lf-job-matches';
+                    nameInput?.classList.remove('lf-invalid');
+                }
+            });
+        }
 
         function closeRepoConfigModal() {
             repoConfigBackdropEl.hidden = true;
@@ -1785,11 +2001,11 @@
                     backport_required_labels: bpRequiredLabels,
                 },
             });
-            // Persist the failed-CI log filter (separate store / RPC).
-            const logFilterText = document.getElementById('repo-config-log-filter')?.value ?? '';
+            // Persist the failed-CI log filter from the structured form (separate store / RPC).
+            lfReadForm();
             const lfResp = await sendRpc({
-                jsonrpc: '2.0', id: nextId++, method: 'repoLogFilterSet',
-                params: { repo, text: logFilterText },
+                jsonrpc: '2.0', id: nextId++, method: 'repoLogFilterSetStructured',
+                params: { repo, struct: lfState },
             });
             if (lfResp && lfResp.error) {
                 showToast(lfResp.error.message || 'Invalid log filter', 'error');
@@ -1797,6 +2013,7 @@
             }
             // A changed filter invalidates any excerpts already shown.
             logExcerptCache.clear();
+            logAutoLoaded.clear();
 
             if (data && !data.error) {
                 repoConfigs[repo] = {
@@ -1843,9 +2060,33 @@
             return `<div class="log-excerpt">${body}</div>`;
         }
 
-        async function loadLogExcerpt(trackerId, runId) {
+        // Bounded-concurrency loader: a dashboard full of failing PRs would
+        // otherwise fire one download per card at once, saturating the browser's
+        // connection pool and starving other RPCs (e.g. the config modal).
+        let lfActiveLoads = 0;
+        const lfLoadQueue = [];
+        const LF_MAX_CONCURRENT_LOADS = 2;
+
+        function loadLogExcerpt(trackerId, runId) {
+            if (logExcerptCache.has(runId)) return;  // loading or loaded already
             logExcerptCache.set(runId, { loading: true });
             rerenderTrackerCard(trackerId);
+            lfLoadQueue.push([trackerId, runId]);
+            lfPumpLoadQueue();
+        }
+
+        function lfPumpLoadQueue() {
+            while (lfActiveLoads < LF_MAX_CONCURRENT_LOADS && lfLoadQueue.length) {
+                const [trackerId, runId] = lfLoadQueue.shift();
+                lfActiveLoads++;
+                _fetchLogExcerpt(trackerId, runId).finally(() => {
+                    lfActiveLoads--;
+                    lfPumpLoadQueue();
+                });
+            }
+        }
+
+        async function _fetchLogExcerpt(trackerId, runId) {
             let result;
             try {
                 const data = await sendRpc({

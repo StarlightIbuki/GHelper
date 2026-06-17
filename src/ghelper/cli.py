@@ -1041,6 +1041,132 @@ def _default_log_filter_template(repo: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Structured (form-friendly) view of the log_filter DSL
+#
+# The web UI edits the filter through a form rather than the raw DSL, but the
+# DSL stays the single persisted format. These helpers convert between the DSL
+# text and a JSON-able struct so the Python parser remains the source of truth
+# (no duplicated regex/DSL parsing in JavaScript).
+# ---------------------------------------------------------------------------
+
+def _grep_spec_to_struct(spec: Optional[_GrepSpec]) -> dict[str, Any]:
+    return {
+        "pattern": spec.pattern.pattern if (spec and spec.pattern is not None) else "",
+        "before": spec.before if spec else 0,
+        "after": spec.after if spec else 0,
+    }
+
+
+def _log_filter_to_struct(text: Optional[str]) -> dict[str, Any]:
+    """Parse the DSL into ``{global: {...}, jobs: [{...}]}`` for the form UI."""
+    lf = _parse_log_filter(text)
+    jobs: list[dict[str, Any]] = []
+    for name_re, override in lf.jobs:
+        entry: dict[str, Any] = {"name": name_re.pattern, "has_override": override is not None}
+        entry.update(_grep_spec_to_struct(override))
+        jobs.append(entry)
+    return {"global": _grep_spec_to_struct(lf.global_grep), "jobs": jobs}
+
+
+def _format_grep_spec_source(pattern: Any, before: Any, after: Any) -> str:
+    """Render a regex + before/after back into the ``<regex> +A -B`` DSL fragment."""
+    parts: list[str] = []
+    p = str(pattern or "").strip()
+    if p:
+        parts.append(p)
+    try:
+        after_n = int(after or 0)
+    except (TypeError, ValueError):
+        after_n = 0
+    try:
+        before_n = int(before or 0)
+    except (TypeError, ValueError):
+        before_n = 0
+    if after_n > 0:
+        parts.append(f"+{after_n}")
+    if before_n > 0:
+        parts.append(f"-{before_n}")
+    return " ".join(parts)
+
+
+def _struct_to_log_filter(struct: Any) -> str:
+    """Serialize the form struct back into DSL text (inverse of _log_filter_to_struct)."""
+    if not isinstance(struct, dict):
+        return ""
+    lines: list[str] = []
+    g = struct.get("global") or {}
+    g_src = _format_grep_spec_source(g.get("pattern"), g.get("before"), g.get("after"))
+    if g_src:
+        lines.append(f"grep: {g_src}")
+    for job in (struct.get("jobs") or []):
+        if not isinstance(job, dict):
+            continue
+        name = str(job.get("name") or "").strip()
+        if not name:
+            continue
+        if job.get("has_override"):
+            o_src = _format_grep_spec_source(job.get("pattern"), job.get("before"), job.get("after"))
+            # Keep the `=>` even with an empty override (means "whole log for this job").
+            lines.append(f"job: {name}  =>  {o_src}".rstrip())
+        else:
+            lines.append(f"job: {name}")
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
+def _log_filter_preview(struct: Any, job_names: Any = None) -> dict[str, Any]:
+    """Validate a form struct and report which tracked job names each rule matches.
+
+    Returns ``{ok, error, text, global_error, jobs: [{name, error, matches}]}``.
+    Regexes are compiled with Python's ``re`` (the same engine used at apply time)
+    so validation matches real behaviour rather than JavaScript's regex dialect.
+    """
+    text = _struct_to_log_filter(struct)
+    result: dict[str, Any] = {"ok": True, "error": "", "text": text, "global_error": "", "jobs": []}
+    struct = struct if isinstance(struct, dict) else {}
+
+    g = struct.get("global") or {}
+    g_pattern = str(g.get("pattern") or "").strip()
+    if g_pattern:
+        try:
+            re.compile(g_pattern, re.MULTILINE)
+        except re.error as exc:
+            result["global_error"] = str(exc)
+            result["ok"] = False
+
+    names = [str(n) for n in (job_names or []) if str(n).strip()]
+    for job in (struct.get("jobs") or []):
+        if not isinstance(job, dict):
+            continue
+        name = str(job.get("name") or "").strip()
+        entry: dict[str, Any] = {"name": name, "error": "", "matches": []}
+        if name:
+            try:
+                name_re = re.compile(name)
+                entry["matches"] = [n for n in names if name_re.search(n)]
+            except re.error as exc:
+                entry["error"] = str(exc)
+                result["ok"] = False
+        if job.get("has_override"):
+            o_pattern = str(job.get("pattern") or "").strip()
+            if o_pattern:
+                try:
+                    re.compile(o_pattern, re.MULTILINE)
+                except re.error as exc:
+                    entry["error"] = (entry["error"] + "; " if entry["error"] else "") + f"grep: {exc}"
+                    result["ok"] = False
+        result["jobs"].append(entry)
+
+    # Final guard: ensure the assembled DSL parses as a whole.
+    try:
+        _parse_log_filter(text)
+    except Exception as exc:  # pragma: no cover - defensive
+        result["ok"] = False
+        if not result["error"]:
+            result["error"] = str(getattr(exc, "message", exc))
+    return result
+
+
 def _extract_log_lines(
     text: str,
     spec: _GrepSpec,

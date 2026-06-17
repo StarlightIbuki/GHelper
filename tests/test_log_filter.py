@@ -7,9 +7,12 @@ import pytest
 from ghelper.cli import (
     _GrepSpec,
     _extract_log_lines,
+    _log_filter_preview,
+    _log_filter_to_struct,
     _parse_grep_spec,
     _parse_log_filter,
     _select_failed_jobs,
+    _struct_to_log_filter,
 )
 
 
@@ -124,3 +127,43 @@ def test_extract_log_lines_whole_log_when_no_pattern():
     spec = _GrepSpec(None)
     rendered = _extract_log_lines(SAMPLE_LOG, spec, color=False)
     assert len(rendered) == len(SAMPLE_LOG.splitlines())
+
+
+def test_struct_roundtrip_preserves_filter():
+    text = "\n".join([
+        r"grep: ^\s*FAIL\b +40 -1",
+        r"job: .*degraphql.*  =>  ^\s*FAIL\b.*(?:\n(?!.*__________).*)*",
+        "job: ^build",
+    ]) + "\n"
+    struct = _log_filter_to_struct(text)
+    assert struct["global"] == {"pattern": r"^\s*FAIL\b", "before": 1, "after": 40}
+    assert struct["jobs"][0]["name"] == ".*degraphql.*"
+    assert struct["jobs"][0]["has_override"] is True
+    assert struct["jobs"][1] == {"name": "^build", "has_override": False, "pattern": "", "before": 0, "after": 0}
+    # Round-trip back to DSL and re-parse to the same struct.
+    assert _log_filter_to_struct(_struct_to_log_filter(struct)) == struct
+
+
+def test_struct_to_log_filter_keeps_empty_override_as_whole_log():
+    struct = {"global": {"pattern": "", "before": 0, "after": 0},
+              "jobs": [{"name": "^build", "has_override": True, "pattern": "", "before": 0, "after": 0}]}
+    text = _struct_to_log_filter(struct)
+    assert "=>" in text
+    back = _log_filter_to_struct(text)
+    assert back["jobs"][0]["has_override"] is True
+
+
+def test_log_filter_preview_reports_matches_and_errors():
+    struct = {
+        "global": {"pattern": r"^\s*FAIL\b", "before": 1, "after": 40},
+        "jobs": [
+            {"name": ".*degraphql.*", "has_override": False, "pattern": "", "before": 0, "after": 0},
+            {"name": "(bad", "has_override": False, "pattern": "", "before": 0, "after": 0},
+        ],
+    }
+    names = ["Busted tests / Runner 7", "degraphql hybrid", "build"]
+    preview = _log_filter_preview(struct, names)
+    assert preview["jobs"][0]["matches"] == ["degraphql hybrid"]
+    assert preview["jobs"][1]["error"]  # invalid regex reported
+    assert preview["ok"] is False
+    assert preview["global_error"] == ""

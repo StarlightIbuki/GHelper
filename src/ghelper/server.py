@@ -35,11 +35,14 @@ from ghelper.cli import (
     _extract_log_lines,
     _get_repo_log_filter,
     _job_logs_url,
+    _log_filter_preview as _cli_log_filter_preview,
+    _log_filter_to_struct,
     _parse_log_filter,
     _pick_pr_status,
     _resolve_session_ref,
     _select_failed_jobs,
     _set_repo_log_filter,
+    _struct_to_log_filter,
     _request_device_code as _cli_request_device_code,
     _poll_device_token as _cli_poll_device_token,
     _trigger_rerun,
@@ -298,6 +301,8 @@ class JSONRPCServer:
         # Lazily-fetched, grepped failed-job log excerpts, keyed by
         # (run_id, log_filter text) so re-greps after a config edit re-download.
         self._log_excerpt_cache: dict[tuple[int, str], dict[str, Any]] = {}
+        # Bounds concurrent log downloads; created lazily inside the event loop.
+        self._log_excerpt_sem: Optional[asyncio.Semaphore] = None
 
     # ------------------------------------------------------------------
     # Sync API for in-process callers (TUI thread)
@@ -1237,6 +1242,9 @@ class JSONRPCServer:
             "repoConfigSet": self._repo_config_set,
             "repoLogFilterGet": self._repo_log_filter_get,
             "repoLogFilterSet": self._repo_log_filter_set,
+            "repoLogFilterGetStructured": self._repo_log_filter_get_structured,
+            "repoLogFilterSetStructured": self._repo_log_filter_set_structured,
+            "logFilterPreview": self._log_filter_preview,
             # Failed-CI log extraction
             "trackerLogExcerpt": self._tracker_log_excerpt,
             # Status methods
@@ -1740,6 +1748,35 @@ class JSONRPCServer:
         self._record_event(f"log filter updated for {repo}")
         return {"repo": repo, "log_filter": text or ""}
 
+    async def _repo_log_filter_get_structured(self, repo: str) -> dict[str, Any]:
+        """Return the log filter as a form-friendly struct (+ raw text).
+
+        Reads inline (tiny local file) so opening the config modal never waits on
+        the thread pool, even while log downloads are in flight.
+        """
+        repo = str(repo or "").strip()
+        text = _get_repo_log_filter(repo)
+        return {"repo": repo, "struct": _log_filter_to_struct(text), "text": text}
+
+    async def _repo_log_filter_set_structured(self, repo: str, struct: Any) -> dict[str, Any]:
+        """Persist a log filter supplied as a form struct (serialized + validated)."""
+        repo = str(repo or "").strip()
+        if not repo:
+            raise JSONRPCError(self.INVALID_PARAMS, "repo is required")
+        text = _struct_to_log_filter(struct)
+        try:
+            _parse_log_filter(text)
+        except Exception as exc:
+            raise JSONRPCError(self.INVALID_PARAMS, f"invalid log filter: {exc}")
+        await asyncio.to_thread(_set_repo_log_filter, repo, text)
+        self._log_excerpt_cache.clear()
+        self._record_event(f"log filter updated for {repo}")
+        return {"repo": repo, "text": text, "struct": _log_filter_to_struct(text)}
+
+    async def _log_filter_preview(self, struct: Any, job_names: Any = None) -> dict[str, Any]:
+        """Validate a draft filter struct and report which job names each rule matches."""
+        return _cli_log_filter_preview(struct, job_names or [])
+
     def _compute_log_excerpt(
         self,
         repo: str,
@@ -1823,15 +1860,27 @@ class JSONRPCServer:
             run_id = int(failing.get("id", 0) or 0)
         run_id = int(run_id)
 
-        log_filter_text = await asyncio.to_thread(_get_repo_log_filter, repo)
+        # Tiny local file read — keep it inline so it never queues behind a slow
+        # log download in the shared thread pool (which would stall other RPCs,
+        # e.g. the repo-config modal).
+        log_filter_text = _get_repo_log_filter(repo)
         cache_key = (run_id, log_filter_text)
         cached = self._log_excerpt_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        result = await asyncio.to_thread(
-            self._compute_log_excerpt, repo, run_id, log_filter_text
-        )
+        # Bound concurrent downloads so a burst of auto-loads (one per failing PR)
+        # can't saturate the thread pool / connection pool and freeze the UI.
+        if self._log_excerpt_sem is None:
+            self._log_excerpt_sem = asyncio.Semaphore(2)
+        async with self._log_excerpt_sem:
+            # Re-check the cache: another request may have fetched this meanwhile.
+            cached = self._log_excerpt_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            result = await asyncio.to_thread(
+                self._compute_log_excerpt, repo, run_id, log_filter_text
+            )
         # Only cache successful fetches; let errors be retried.
         if not result.get("error"):
             self._log_excerpt_cache[cache_key] = result
