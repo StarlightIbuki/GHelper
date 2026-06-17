@@ -1212,6 +1212,23 @@
                 return el.closest('[data-tracker-ids]');
             }
 
+            // Only enable native dragging while the pointer is held on a drag
+            // handle. This keeps the rest of the card text-selectable/copyable.
+            let _armedEl = null;
+            function _disarm() {
+                if (_armedEl) { _armedEl.removeAttribute('draggable'); _armedEl = null; }
+            }
+            trackerTreeEl.addEventListener('mousedown', function(e) {
+                if (!e.target.closest('.drag-handle')) return;
+                const draggable = _getDraggable(e.target);
+                if (!draggable) return;
+                _disarm();
+                draggable.setAttribute('draggable', 'true');
+                _armedEl = draggable;
+            });
+            // Reset if the press ends without a drag actually starting.
+            document.addEventListener('mouseup', _disarm);
+
             trackerTreeEl.addEventListener('dragstart', function(e) {
                 const draggable = _getDraggable(e.target);
                 if (!draggable) return;
@@ -1227,6 +1244,7 @@
                     .forEach(el => el.classList.remove('is-dragging', 'drag-over-before', 'drag-over-after'));
                 _dragSrcEl = null;
                 _dragSrcRepo = null;
+                _disarm();
             });
 
             trackerTreeEl.addEventListener('dragover', function(e) {
@@ -1496,7 +1514,7 @@
                 </span>` : '';
 
             return `
-                <div class="pr-card${isSelected ? ' pr-card-selected' : ''}" id="pr-card-${t.id}"${isDraggable ? ` draggable="true" data-tracker-ids="${t.id}"` : ''}>
+                <div class="pr-card${isSelected ? ' pr-card-selected' : ''}" id="pr-card-${t.id}"${isDraggable ? ` data-tracker-ids="${t.id}"` : ''}>
                     <div class="pr-card-main">
                         ${isDraggable ? `<span class="drag-handle" title="Drag to reorder">${DRAG_HANDLE_SVG}</span>` : '<span class="drag-handle-spacer"></span>'}
                         <label class="pr-select-label" title="Select for bulk action">
@@ -1642,7 +1660,7 @@
                             const groupAllSelected = items.length > 0 && items.every(t => selectedTrackers.has(t.id));
                             const groupTrackerIds = items.map(t => t.id).join(',');
                             return `
-                                <div class="group-shell is-backport" draggable="true" data-tracker-ids="${escapeHtml(groupTrackerIds)}">
+                                <div class="group-shell is-backport" data-tracker-ids="${escapeHtml(groupTrackerIds)}">
                                     <div class="group-row" data-group-id="${escapeHtml(groupId)}">
                                         <span class="drag-handle" title="Drag to reorder">${DRAG_HANDLE_SVG}</span>
                                         <label class="group-row-check" title="Select all PRs in this group">

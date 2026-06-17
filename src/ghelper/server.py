@@ -34,6 +34,7 @@ from ghelper.cli import (
     _download_binary,
     _extract_log_lines,
     _get_repo_log_filter,
+    _job_logs_url,
     _parse_log_filter,
     _pick_pr_status,
     _resolve_session_ref,
@@ -1772,7 +1773,7 @@ class JSONRPCServer:
                     "error": "no failed job matched the log_filter job: patterns"}
         job, spec = selected[0]
         try:
-            blob = _download_binary(job.logs_url, self.token or "")
+            blob = _download_binary(_job_logs_url(job), self.token or "")
             lines: list[str] = []
             for _name, log_text in _decode_log_archive(blob):
                 lines.extend(_extract_log_lines(log_text, spec, color=False))

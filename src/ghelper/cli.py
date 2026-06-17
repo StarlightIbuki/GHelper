@@ -859,14 +859,17 @@ def _collect_assigned_pr_entries(
 
 
 def _download_binary(url: str, token: str) -> bytes:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "ghelper",
-        },
-    )
+    # GitHub job-log URLs redirect to a pre-signed blob-storage URL whose `sig`
+    # query param IS the credential. Azure/blob storage rejects requests that
+    # also carry an Authorization header (HTTP 401), so only send the GitHub
+    # token to GitHub hosts and fetch signed URLs bare.
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    is_github = host == "github.com" or host.endswith(".github.com")
+    headers = {"User-Agent": "ghelper"}
+    if is_github and token:
+        headers["Authorization"] = f"Bearer {token}"
+        headers["Accept"] = "application/vnd.github+json"
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             return response.read()
@@ -1141,6 +1144,20 @@ def _collect_failed_jobs(run: Any) -> list[Any]:
         job for job in run.jobs()
         if (job.conclusion or "").lower() in _RETRY_CONCLUSIONS
     ]
+
+
+def _job_logs_url(job: Any) -> str:
+    """Resolve a WorkflowJob's logs URL across PyGithub versions.
+
+    Newer PyGithub exposes ``logs_url`` as a method that performs a request and
+    returns the (pre-signed) redirect location; older versions expose it as a
+    plain string attribute. Handle both so the download gets a real URL rather
+    than a bound method.
+    """
+    attr = getattr(job, "logs_url", None)
+    if callable(attr):
+        return str(attr())
+    return str(attr or "")
 
 
 # ---------------------------------------------------------------------------
@@ -3872,7 +3889,7 @@ def failed_logs_cmd(
                     click.echo("    failed steps: (none reported by API)")
 
                 click.echo(f"    Downloading logs ({job_index}/{len(selected)})...", err=True)
-                blob = _download_binary(job.logs_url, token)
+                blob = _download_binary(_job_logs_url(job), token)
                 click.echo(f"    Parsing logs...", err=True)
                 for file_name, log_text in _decode_log_archive(blob):
                     click.echo(f"    log: {file_name}")
