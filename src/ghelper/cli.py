@@ -1484,12 +1484,12 @@ def _all_failures_ignored(run: WorkflowRun, ignore_ci: list[str]) -> bool:
         return False
     failed_jobs = [
         job for job in run.jobs()
-        if job.conclusion in {"failure", "timed_out"}
+        if (job.conclusion or "").lower() in _RETRY_CONCLUSIONS
     ]
     if not failed_jobs:
         return False
     return all(
-        any(pat.lower() in job.name.lower() for pat in ignore_ci)
+        any(pat.lower() in str(getattr(job, "name", "") or "").lower() for pat in ignore_ci)
         for job in failed_jobs
     )
 

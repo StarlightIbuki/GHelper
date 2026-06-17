@@ -2049,9 +2049,14 @@ class JSONRPCServer:
             headers={"Accept": "application/json", "User-Agent": "ghelper"},
             method="POST",
         )
-        try:
+        def _do_request() -> str:
             with urllib.request.urlopen(request, timeout=20) as response:
-                raw = response.read().decode("utf-8")
+                return response.read().decode("utf-8")
+
+        try:
+            # Offload the blocking HTTP POST so the device-flow poll doesn't stall
+            # the event loop (and with it the tracker loop and all other RPCs).
+            raw = await asyncio.to_thread(_do_request)
         except urllib.error.URLError as exc:
             logger.error("Error polling device token: %s", exc)
             raise JSONRPCError(self.INTERNAL_ERROR, f"Device authorization network error: {exc.reason or exc}")
