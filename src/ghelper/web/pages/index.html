@@ -50,6 +50,7 @@
         .status-pending      { background: #ddf4ff; color: #0550ae; }
         .status-merged       { background: #fbefff; color: #8250df; }
         .status-needs-action { background: #fff0e0; color: #953800; }
+        .status-needs-review { background: #ddf4ff; color: #0969da; }
         .status-closed       { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
         .status-unknown      { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
         .status-paused       { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
@@ -601,6 +602,7 @@
         }
         const STATUS_FILTERS = [
             { key: 'action',   cls: 'status-needs-action', label: 'Needs action' },
+            { key: 'review',   cls: 'status-needs-review', label: 'Needs review' },
             { key: 'pending',  cls: 'status-running',      label: 'Pending' },
             { key: 'ready',    cls: 'status-passing',      label: 'Passing' },
             { key: 'merged',   cls: 'status-merged',       label: 'Merged' },
@@ -1506,7 +1508,8 @@
             const detail = String(t.last_detail || '').toLowerCase();
             if (!detail || detail === 'unknown') return 'unknown';
             if (/merged/.test(detail)) return 'merged';
-            if (/review required|label required/.test(detail)) return 'action';
+            if (/review required/.test(detail)) return 'review';
+            if (/label required/.test(detail)) return 'action';
             if (/failed|error/.test(detail)) return 'action';
             if (/pending|running|fetching/.test(detail)) return 'pending';
             if (/closed/.test(detail)) return 'action';
@@ -1516,7 +1519,7 @@
                 const isBp = Boolean(t.is_backport);
                 const reqRev = Number(isBp ? cfg.backport_required_reviews : cfg.required_reviews) || 0;
                 const reqLbl = (isBp ? cfg.backport_required_labels : cfg.required_labels) || [];
-                if (reqRev > 0 && (Number(t.approvals) || 0) < reqRev) return 'action';
+                if (reqRev > 0 && (Number(t.approvals) || 0) < reqRev) return 'review';
                 if (reqLbl.length > 0) {
                     const present = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
                     if (reqLbl.some(r => !present.some(p => p.includes(r.toLowerCase())))) return 'action';
@@ -1535,7 +1538,7 @@
             const detail = String(t.last_detail || '').toLowerCase().trim();
             if (!detail || detail === 'unknown') return { cls: 'unknown', label: 'Checking' };
             if (/merged/.test(detail))           return { cls: 'merged', label: 'Merged' };
-            if (/review required/.test(detail))  return { cls: 'needs-action', label: 'Review required' };
+            if (/review required/.test(detail))  return { cls: 'needs-review', label: 'Review required' };
             if (/label required/.test(detail))   return { cls: 'needs-action', label: 'Label required' };
             if (/failed|error/.test(detail))     return { cls: 'failed', label: 'CI failed' };
             if (/closed/.test(detail))           return { cls: 'closed', label: 'Closed' };
@@ -1549,7 +1552,7 @@
                 const approvals = Number(t.approvals) || 0;
                 if (reqRev > 0 && approvals < reqRev) {
                     const needed = reqRev - approvals;
-                    return { cls: 'needs-action', label: `${needed} review${needed === 1 ? '' : 's'} needed` };
+                    return { cls: 'needs-review', label: `${needed} review${needed === 1 ? '' : 's'} needed` };
                 }
                 if (reqLbl.length > 0) {
                     const present = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
@@ -1562,15 +1565,17 @@
         }
 
         function summarizeBackportGroup(items) {
-            const summary = { merged: 0, ready: 0, pending: 0, action: 0, unknown: 0 };
+            const summary = { merged: 0, ready: 0, pending: 0, action: 0, review: 0, unknown: 0 };
             items.forEach((t) => {
                 const state = classifyTrackerState(t);
+                if (summary[state] === undefined) summary[state] = 0;
                 summary[state] += 1;
             });
             const chunks = [];
             if (summary.merged > 0) chunks.push(`merged ${summary.merged}`);
             if (summary.ready > 0) chunks.push(`ready ${summary.ready}`);
             if (summary.pending > 0) chunks.push(`ci pending ${summary.pending}`);
+            if (summary.review > 0) chunks.push(`review needed ${summary.review}`);
             if (summary.action > 0) chunks.push(`action needed ${summary.action}`);
             if (summary.unknown > 0) chunks.push(`unknown ${summary.unknown}`);
             return chunks.join(' • ') || 'unknown';
@@ -1595,7 +1600,7 @@
         }
 
         function groupStatusPills(items) {
-            const counts = { merged: 0, ready: 0, pending: 0, action: 0, unknown: 0, retrying: 0 };
+            const counts = { merged: 0, ready: 0, pending: 0, action: 0, review: 0, unknown: 0, retrying: 0 };
             const actionTypes = { ci: 0, reviews: 0, labels: 0, other: 0 };
             items.forEach(t => {
                 const s = classifyTrackerState(t);
@@ -1617,7 +1622,7 @@
             };
             add('status-retrying',     'retrying',      counts.retrying);
             add('status-needs-action', 'CI failed',     actionTypes.ci);
-            add('status-needs-action', 'needs reviews', actionTypes.reviews);
+            add('status-needs-review', 'needs reviews', counts.review + actionTypes.reviews);
             add('status-needs-action', 'needs labels',  actionTypes.labels);
             add('status-needs-action', 'action needed', actionTypes.other);
             add('status-running',      'CI pending',    counts.pending);
