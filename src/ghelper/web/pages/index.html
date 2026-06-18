@@ -55,6 +55,8 @@
         .status-paused       { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
         .status-retrying     { background: #fff3b0; color: #7d4e00; }
         @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        button.is-syncing svg { animation: spin 0.8s linear infinite; transform-origin: center; }
         .pr-status-pill.status-retrying::before { animation: pulse-dot 1.2s ease-in-out infinite; }
         .group-status-pill.status-retrying::before { animation: pulse-dot 1.2s ease-in-out infinite; }
 
@@ -131,7 +133,13 @@
         .check-log-caret { flex-shrink: 0; color: #8b949e; width: 0.9em; text-align: center; font-style: normal; }
         .log-excerpt { background: #0d1117; color: #c9d1d9; border-bottom: 1px solid #f0f4f8; padding: 6px 10px; max-width: 100%; box-sizing: border-box; overflow: hidden; }
         .log-excerpt-job { color: #f0883e; font-size: 11px; font-family: var(--font-mono, monospace); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .log-excerpt-pre { margin: 0; max-width: 100%; max-height: 320px; overflow: auto; font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.45; white-space: pre; color: #c9d1d9; }
+        .log-excerpt-pre { margin: 0; max-width: 100%; max-height: 320px; overflow: auto; font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.45; white-space: pre; color: #c9d1d9; scrollbar-width: thin; scrollbar-color: #30363d transparent; }
+        /* Themed scrollbar so the dark log pane doesn't show a default light scrollbar. */
+        .log-excerpt-pre::-webkit-scrollbar { width: 10px; height: 10px; }
+        .log-excerpt-pre::-webkit-scrollbar-track { background: transparent; }
+        .log-excerpt-pre::-webkit-scrollbar-thumb { background: #30363d; border-radius: 5px; border: 2px solid #0d1117; }
+        .log-excerpt-pre::-webkit-scrollbar-thumb:hover { background: #484f58; }
+        .log-excerpt-pre::-webkit-scrollbar-corner { background: transparent; }
         .log-excerpt-msg { color: #8b949e; font-size: 11px; padding: 2px 0; }
         .log-excerpt-err { color: #ff7b72; }
         /* Structured log-filter form (repo config modal) */
@@ -165,6 +173,7 @@
 
         /* ── Action bar ──────────────────────────────────────────── */
         .pr-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; padding-top: 1px; }
+        .retry-toggle.retry-on { background: #fff3b0; border-color: #e6c619; color: #7d4e00; }
 
         /* ── Retry indicator ────────────────────────────────────────── */
         .retry-indicator {
@@ -369,7 +378,7 @@
             <div style="display: flex; gap: 12px;">
                 <button id="trackerAdd" class="primary">
                     <svg class="octicon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" style="margin-right: 6px; fill: currentColor;"><path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"></path></svg>
-                    Add Target
+                    Add PRs
                 </button>
                 <button id="trackerRefreshAll" class="secondary">
                     <svg class="octicon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" style="margin-right: 6px; fill: currentColor;"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"></path></svg>
@@ -393,7 +402,7 @@
 
     <div id="wizardBackdrop" class="wizard-backdrop" hidden>
         <div class="wizard-window" style="max-width: 900px;">
-            <div class="wiz-header"><h3 style="margin:0;">Add Tracking Targets</h3></div>
+            <div class="wiz-header"><h3 style="margin:0;">Add Tracking PRs</h3></div>
             <div class="wiz-body">
                 <div class="import-panel">
                     <textarea id="wizardImportText" placeholder="Paste PR URLs, markdown links, or owner/repo#123 references"></textarea>
@@ -544,8 +553,8 @@
         <button class="bulk-bar-btn" onclick="bulkAction('refresh')">
             <svg viewBox="0 0 16 16" width="12" height="12" style="fill:currentColor;vertical-align:-1px;margin-right:4px" aria-hidden="true"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>Sync
         </button>
-        <button class="bulk-bar-btn" onclick="bulkAction('pause')">Pause</button>
-        <button class="bulk-bar-btn" onclick="bulkAction('resume')">Resume</button>
+        <button class="bulk-bar-btn" onclick="bulkAction('retry-on')">Auto-retry on</button>
+        <button class="bulk-bar-btn" onclick="bulkAction('retry-off')">Auto-retry off</button>
         <button class="bulk-bar-btn" onclick="bulkAction('reset-retries')">
             <svg viewBox="0 0 16 16" width="12" height="12" style="fill:currentColor;vertical-align:-1px;margin-right:4px" aria-hidden="true"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>Reset retries
         </button>
@@ -1925,10 +1934,11 @@
             } else if (action === 'refresh') {
                 for (const id of ids)
                     await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: { tracker_id: id } });
-            } else if (action === 'pause' || action === 'resume') {
-                const active = action === 'resume';
+            } else if (action === 'retry-on' || action === 'retry-off') {
+                const autoRerun = action === 'retry-on';
                 for (const id of ids)
-                    await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerSetActive', params: { tracker_id: id, active } });
+                    await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate', params: { tracker_id: id, auto_rerun: autoRerun } });
+                showToast(`Auto-retry ${autoRerun ? 'enabled' : 'disabled'} for ${ids.length} PR${ids.length === 1 ? '' : 's'}`, 'success', 2500);
             } else if (action === 'reset-retries') {
                 for (const id of ids)
                     await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate', params: { tracker_id: id, reset_attempts: true } });
@@ -1977,7 +1987,6 @@
                         <div class="pr-card-body">
                             <div class="pr-card-top">
                                 <span class="pr-status-pill status-${info.cls}">${escapeHtml(info.label)}</span>
-                                ${!t.active ? '<span class="badge badge-paused">Paused</span>' : ''}
                                 <a href="${escapeHtml(t.target)}" target="_blank" rel="noopener noreferrer" class="pr-title">${escapeHtml(t.pr_title || t.target)}</a>
                             </div>
                             <div class="pr-card-meta">
@@ -1996,17 +2005,14 @@
                             ${checksHtml}
                         </div>
                         <div class="pr-actions">
-                            <button class="secondary icon-btn" title="Sync now" aria-label="Sync" onclick="trackerAction('refresh', ${t.id})">
+                            <button class="secondary icon-btn" title="Sync now" aria-label="Sync" onclick="trackerAction('refresh', ${t.id}, event)">
                                 <svg viewBox="0 0 16 16" width="14" height="14" style="fill:currentColor" aria-hidden="true"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>
                             </button>
                             <button class="secondary icon-btn" title="Update branch" aria-label="Update branch" onclick="trackerAction('updateBranch', ${t.id})">
                                 <svg viewBox="0 0 16 16" width="14" height="14" style="fill:currentColor" aria-hidden="true"><path d="M5 3.254V3.25v.005a.75.75 0 1 1 0-.005v.004Zm.45 1.9a2.25 2.25 0 1 0-1.95.218v5.256a2.25 2.25 0 1 0 1.5 0V7.123A5.735 5.735 0 0 0 9.25 9h1.378a2.251 2.251 0 1 0 0-1.5H9.25a4.25 4.25 0 0 1-3.8-2.346ZM12.75 9a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm-8.5 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/></svg>
                             </button>
-                            <button class="secondary icon-btn" title="${t.active ? 'Pause tracking' : 'Resume tracking'}" aria-label="${t.active ? 'Pause' : 'Resume'}" onclick="trackerAction('toggle', ${t.id})">
-                                ${t.active
-                                    ? `<svg viewBox="0 0 16 16" width="14" height="14" style="fill:currentColor" aria-hidden="true"><path d="M4.75 2.5a.75.75 0 0 1 .75.75v9.5a.75.75 0 0 1-1.5 0v-9.5a.75.75 0 0 1 .75-.75Zm6.5 0a.75.75 0 0 1 .75.75v9.5a.75.75 0 0 1-1.5 0v-9.5a.75.75 0 0 1 .75-.75Z"/></svg>`
-                                    : `<svg viewBox="0 0 16 16" width="14" height="14" style="fill:currentColor" aria-hidden="true"><path d="M3 2.75A1.75 1.75 0 0 1 5.637 1.24l7.325 4.982a1.75 1.75 0 0 1 0 2.896L5.637 14.1A1.75 1.75 0 0 1 3 12.589V2.75Zm1.5 0v9.839a.25.25 0 0 0 .377.216l7.325-4.983a.25.25 0 0 0 0-.414L4.877 2.534a.25.25 0 0 0-.377.216Z"/></svg>`
-                                }
+                            <button class="secondary icon-btn retry-toggle${t.auto_rerun ? ' retry-on' : ''}" title="${t.auto_rerun ? 'Auto-retry on — click to stop auto-rerunning failed CI' : 'Auto-retry off — click to auto-rerun failed CI'}" aria-label="${t.auto_rerun ? 'Disable auto-retry' : 'Enable auto-retry'}" aria-pressed="${t.auto_rerun ? 'true' : 'false'}" onclick="trackerAction('toggleRetry', ${t.id})">
+                                <svg viewBox="0 0 16 16" width="14" height="14" style="fill:currentColor" aria-hidden="true"><path d="M9.504.43a1.516 1.516 0 0 1 2.437 1.713L10.415 5.5h2.123c1.57 0 2.346 1.909 1.22 3.004l-7.34 7.142a1.249 1.249 0 0 1-.871.354h-.302a1.25 1.25 0 0 1-1.157-1.723L5.633 10.5H3.462c-1.57 0-2.346-1.909-1.22-3.004L9.503.43Z"/></svg>
                             </button>
                         </div>
                     </div>
@@ -2169,11 +2175,27 @@
             });
         }
 
-        async function trackerAction(action, id) {
-            if (action === 'refresh') await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: { tracker_id: id } });
-            if (action === 'toggle') {
+        async function trackerAction(action, id, event) {
+            if (action === 'refresh') {
+                const btn = event && event.currentTarget;
+                if (btn) { btn.disabled = true; btn.classList.add('is-syncing'); }
+                try {
+                    const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: { tracker_id: id } });
+                    if (!data) showToast('Sync failed — could not reach server', 'error');
+                    else if (data.error) showToast(`Sync failed: ${data.error.message || 'unknown error'}`, 'error');
+                    else showToast('Synced', 'success', 2000);
+                } finally {
+                    if (btn) { btn.disabled = false; btn.classList.remove('is-syncing'); }
+                }
+            }
+            if (action === 'toggleRetry') {
                 const cur = trackerRows.find(x => x.id == id);
-                await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerSetActive', params: { tracker_id: id, active: !cur.active } });
+                const next = !cur.auto_rerun;
+                const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate', params: { tracker_id: id, auto_rerun: next } });
+                if (data && !data.error)
+                    showToast(next ? 'Auto-retry enabled — failed CI will be re-run' : 'Auto-retry disabled', 'success', 2500);
+                else
+                    showToast(data?.error?.message || 'Failed to update auto-retry', 'error');
             }
             if (action === 'updateBranch') {
                 const cur = trackerRows.find(x => x.id == id);
@@ -2678,9 +2700,25 @@
         wizardAddSelectedBtn.onclick = () => { void addSelectedAssignedTargets(); };
         authCloseBtn.onclick = () => closeAuthModal();
         addTargetsCloseBtn.onclick = () => closeAddTargetsModal();
-        document.getElementById('trackerRefreshAll').onclick = async () => {
-            await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: {} });
-            refreshTrackersView();
+        document.getElementById('trackerRefreshAll').onclick = async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            btn.classList.add('is-syncing');
+            try {
+                const data = await sendRpc({ jsonrpc: '2.0', id: nextId++, method: 'trackerRefresh', params: {} });
+                if (!data) {
+                    showToast('Sync failed — could not reach server', 'error');
+                } else if (data.error) {
+                    showToast(`Sync failed: ${data.error.message || 'unknown error'}`, 'error');
+                } else {
+                    const n = data.result && typeof data.result.refreshed === 'number' ? data.result.refreshed : 0;
+                    showToast(`Synced ${n} tracker${n === 1 ? '' : 's'}`, 'success', 2500);
+                }
+                refreshTrackersView();
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('is-syncing');
+            }
         };
 
         // Initialize
