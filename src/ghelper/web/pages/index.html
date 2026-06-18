@@ -76,6 +76,7 @@
         .tf-chip:hover { opacity: 0.8; filter: grayscale(0.2); }
         .tf-chip.active { opacity: 1; filter: none; box-shadow: inset 0 0 0 1.5px rgba(0,0,0,0.18); }
         .tf-chip .tf-count { font-weight: 400; opacity: 0.75; }
+        .tf-divider { width: 1px; align-self: stretch; min-height: 16px; background: var(--line); margin: 0 2px; }
         .tf-chip-clear { font-size: 12px; color: #0969da; background: none; border: none; cursor: pointer; padding: 4px 6px; }
         .tf-chip-clear:hover { text-decoration: underline; }
 
@@ -594,21 +595,32 @@
         const statusFilter = new Set();
         try {
             const saved = JSON.parse(localStorage.getItem(STATUS_FILTER_LS_KEY) || '[]');
-            if (Array.isArray(saved)) saved.forEach(k => statusFilter.add(k));
+            // Migrate the old combined 'action' key to its split states.
+            if (Array.isArray(saved)) saved.forEach(k => {
+                if (k === 'action') ['failed', 'review', 'labels'].forEach(s => statusFilter.add(s));
+                else statusFilter.add(k);
+            });
         } catch (e) { /* ignore malformed storage */ }
         function persistStatusFilter() {
             try { localStorage.setItem(STATUS_FILTER_LS_KEY, JSON.stringify([...statusFilter])); }
             catch (e) { /* storage unavailable — non-fatal */ }
         }
+        // Every distinct PR state gets its own filter chip. Keys match
+        // classifyTrackerState() output.
         const STATUS_FILTERS = [
-            { key: 'action',   cls: 'status-needs-action', label: 'Needs action' },
+            { key: 'failed',   cls: 'status-failed',       label: 'CI failed' },
             { key: 'review',   cls: 'status-needs-review', label: 'Needs review' },
+            { key: 'labels',   cls: 'status-needs-action', label: 'Needs labels' },
+            { key: 'closed',   cls: 'status-closed',       label: 'Closed' },
             { key: 'pending',  cls: 'status-running',      label: 'Pending' },
             { key: 'ready',    cls: 'status-passing',      label: 'Passing' },
             { key: 'merged',   cls: 'status-merged',       label: 'Merged' },
             { key: 'retrying', cls: 'status-retrying',     label: 'Retrying' },
             { key: 'unknown',  cls: 'status-unknown',      label: 'Checking' },
         ];
+        // "Needs action" is a shortcut chip that toggles this group of
+        // states together — anything that wants the PR owner to do something.
+        const ACTION_GROUP = ['failed', 'review', 'labels'];
 
         function renderFilterBar() {
             if (!trackerFilterEl) return;
@@ -626,11 +638,18 @@
                     return `<button type="button" class="tf-chip ${f.cls}${active ? ' active' : ''}" data-status="${f.key}">`
                         + `${escapeHtml(f.label)} <span class="tf-count">${counts[f.key] || 0}</span></button>`;
                 });
-            if (!chips.length) { trackerFilterEl.innerHTML = ''; return; }
+            // "Needs action" shortcut — selects/clears the whole action group.
+            const actionCount = ACTION_GROUP.reduce((n, k) => n + (counts[k] || 0), 0);
+            const actionActive = ACTION_GROUP.every(k => statusFilter.has(k));
+            const shortcut = (actionCount > 0 || actionActive)
+                ? `<button type="button" class="tf-chip status-needs-action${actionActive ? ' active' : ''}" data-group="action">`
+                    + `Needs action <span class="tf-count">${actionCount}</span></button><span class="tf-divider"></span>`
+                : '';
+            if (!chips.length && !shortcut) { trackerFilterEl.innerHTML = ''; return; }
             const clear = statusFilter.size
                 ? `<button type="button" class="tf-chip-clear" data-clear="1">Clear filter</button>`
                 : '';
-            trackerFilterEl.innerHTML = `<span class="tf-label">Filter:</span>${chips.join('')}${clear}`;
+            trackerFilterEl.innerHTML = `<span class="tf-label">Filter:</span>${shortcut}${chips.join('')}${clear}`;
         }
 
         trackerFilterEl?.addEventListener('click', function(e) {
@@ -640,8 +659,18 @@
                 renderTrackersTree(trackerRows);
                 return;
             }
+            const group = e.target.closest('[data-group]');
+            if (group) {
+                const keys = group.dataset.group === 'action' ? ACTION_GROUP : [];
+                // Toggle the whole group: if all are on, clear them; else add all.
+                if (keys.every(k => statusFilter.has(k))) keys.forEach(k => statusFilter.delete(k));
+                else keys.forEach(k => statusFilter.add(k));
+                persistStatusFilter();
+                renderTrackersTree(trackerRows);
+                return;
+            }
             const chip = e.target.closest('.tf-chip');
-            if (!chip) return;
+            if (!chip || !chip.dataset.status) return;
             const key = chip.dataset.status;
             if (statusFilter.has(key)) statusFilter.delete(key);
             else statusFilter.add(key);
@@ -1509,10 +1538,10 @@
             if (!detail || detail === 'unknown') return 'unknown';
             if (/merged/.test(detail)) return 'merged';
             if (/review required/.test(detail)) return 'review';
-            if (/label required/.test(detail)) return 'action';
-            if (/failed|error/.test(detail)) return 'action';
+            if (/label required/.test(detail)) return 'labels';
+            if (/failed|error/.test(detail)) return 'failed';
             if (/pending|running|fetching/.test(detail)) return 'pending';
-            if (/closed/.test(detail)) return 'action';
+            if (/closed/.test(detail)) return 'closed';
             if (/passed|success/.test(detail)) {
                 // Also check client-side review / label requirements
                 const cfg = repoConfigs[t.repo] || {};
@@ -1522,7 +1551,7 @@
                 if (reqRev > 0 && (Number(t.approvals) || 0) < reqRev) return 'review';
                 if (reqLbl.length > 0) {
                     const present = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
-                    if (reqLbl.some(r => !present.some(p => p.includes(r.toLowerCase())))) return 'action';
+                    if (reqLbl.some(r => !present.some(p => p.includes(r.toLowerCase())))) return 'labels';
                 }
                 return 'ready';
             }
@@ -1565,66 +1594,38 @@
         }
 
         function summarizeBackportGroup(items) {
-            const summary = { merged: 0, ready: 0, pending: 0, action: 0, review: 0, unknown: 0 };
+            const summary = {};
             items.forEach((t) => {
                 const state = classifyTrackerState(t);
-                if (summary[state] === undefined) summary[state] = 0;
-                summary[state] += 1;
+                summary[state] = (summary[state] || 0) + 1;
             });
             const chunks = [];
-            if (summary.merged > 0) chunks.push(`merged ${summary.merged}`);
-            if (summary.ready > 0) chunks.push(`ready ${summary.ready}`);
-            if (summary.pending > 0) chunks.push(`ci pending ${summary.pending}`);
-            if (summary.review > 0) chunks.push(`review needed ${summary.review}`);
-            if (summary.action > 0) chunks.push(`action needed ${summary.action}`);
-            if (summary.unknown > 0) chunks.push(`unknown ${summary.unknown}`);
+            if (summary.merged) chunks.push(`merged ${summary.merged}`);
+            if (summary.ready) chunks.push(`ready ${summary.ready}`);
+            if (summary.pending) chunks.push(`ci pending ${summary.pending}`);
+            if (summary.review) chunks.push(`review needed ${summary.review}`);
+            if (summary.failed) chunks.push(`ci failed ${summary.failed}`);
+            if (summary.labels) chunks.push(`labels needed ${summary.labels}`);
+            if (summary.closed) chunks.push(`closed ${summary.closed}`);
+            if (summary.unknown) chunks.push(`unknown ${summary.unknown}`);
             return chunks.join(' • ') || 'unknown';
         }
 
-        function getActionTypes(t) {
-            const detail = String(t.last_detail || '').toLowerCase();
-            const cfg = repoConfigs[t.repo] || {};
-            const isBp = Boolean(t.is_backport);
-            let ci = false, reviews = false, labels = false;
-            if (/failed|error/.test(detail)) ci = true;
-            if (/review required/.test(detail)) reviews = true;
-            if (/label required/.test(detail)) labels = true;
-            const reqRev = Number(isBp ? cfg.backport_required_reviews : cfg.required_reviews) || 0;
-            const reqLbl = (isBp ? cfg.backport_required_labels : cfg.required_labels) || [];
-            if (reqRev > 0 && (Number(t.approvals) || 0) < reqRev) reviews = true;
-            if (reqLbl.length > 0) {
-                const present = (Array.isArray(t.labels) ? t.labels : []).map(l => l.toLowerCase());
-                if (reqLbl.some(r => !present.some(p => p.includes(r.toLowerCase())))) labels = true;
-            }
-            return { ci, reviews, labels };
-        }
-
         function groupStatusPills(items) {
-            const counts = { merged: 0, ready: 0, pending: 0, action: 0, review: 0, unknown: 0, retrying: 0 };
-            const actionTypes = { ci: 0, reviews: 0, labels: 0, other: 0 };
+            const counts = {};
             items.forEach(t => {
                 const s = classifyTrackerState(t);
                 counts[s] = (counts[s] || 0) + 1;
-                if (s === 'action') {
-                    const types = getActionTypes(t);
-                    if (types.ci || types.reviews || types.labels) {
-                        if (types.ci) actionTypes.ci++;
-                        if (types.reviews) actionTypes.reviews++;
-                        if (types.labels) actionTypes.labels++;
-                    } else {
-                        actionTypes.other++;
-                    }
-                }
             });
             const pills = [];
             const add = (cls, label, n) => {
                 if (n > 0) pills.push(`<span class="group-status-pill ${cls}">${n} ${label}</span>`);
             };
             add('status-retrying',     'retrying',      counts.retrying);
-            add('status-needs-action', 'CI failed',     actionTypes.ci);
-            add('status-needs-review', 'needs reviews', counts.review + actionTypes.reviews);
-            add('status-needs-action', 'needs labels',  actionTypes.labels);
-            add('status-needs-action', 'action needed', actionTypes.other);
+            add('status-failed',       'CI failed',     counts.failed);
+            add('status-needs-review', 'needs reviews', counts.review);
+            add('status-needs-action', 'needs labels',  counts.labels);
+            add('status-closed',       'closed',        counts.closed);
             add('status-running',      'CI pending',    counts.pending);
             add('status-passing',      'passing',       counts.ready);
             add('status-merged',       'merged',        counts.merged);
