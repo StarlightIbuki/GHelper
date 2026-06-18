@@ -30,9 +30,13 @@ from ghelper.cli import (
     _collect_structured_entries,
     _build_pr_display_meta,
     _count_approved_reviews,
+    _append_cache_record,
     _decode_log_archive,
     _download_binary,
+    _evict_pr_cache_fifo,
     _extract_log_lines,
+    _read_cache_jsonl,
+    _write_cache_jsonl,
     _get_repo_log_filter,
     _job_logs_url,
     _log_filter_preview as _cli_log_filter_preview,
@@ -125,8 +129,8 @@ def _normalize_target_url(target: str) -> str:
 
 _GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
 _DEFAULT_GITHUB_CLIENT_ID = "Ov23lio3O4l5m3CE589o"
-_GITHUB_CLIENT_ID_ENV_NAMES = ("GHELPER_GITHUB_CLIENT_ID", "GH_RERUNNER_GITHUB_CLIENT_ID", "GH_RERUNNER_OAUTH_CLIENT_ID")
-_GITHUB_CLIENT_SECRET_ENV_NAMES = ("GHELPER_GITHUB_CLIENT_SECRET", "GH_RERUNNER_GITHUB_CLIENT_SECRET", "GH_RERUNNER_OAUTH_CLIENT_SECRET")
+_GITHUB_CLIENT_ID_ENV = "GHELPER_GITHUB_CLIENT_ID"
+_GITHUB_CLIENT_SECRET_ENV = "GHELPER_GITHUB_CLIENT_SECRET"
 
 
 def _normalize_backport_target(value: Any) -> str:
@@ -140,11 +144,7 @@ def _normalize_backport_target(value: Any) -> str:
 
 def _get_device_flow_client_id() -> str:
     """Get the OAuth client_id for device flow (no secret required)."""
-    client_id = ""
-    for env_name in _GITHUB_CLIENT_ID_ENV_NAMES:
-        client_id = os.environ.get(env_name, "").strip()
-        if client_id:
-            break
+    client_id = os.environ.get(_GITHUB_CLIENT_ID_ENV, "").strip()
     if not client_id:
         client_id = _DEFAULT_GITHUB_CLIENT_ID
     return client_id
@@ -152,14 +152,10 @@ def _get_device_flow_client_id() -> str:
 
 def _oauth_client_config() -> tuple[str, str]:
     client_id = _get_device_flow_client_id()
-    client_secret = ""
-    for env_name in _GITHUB_CLIENT_SECRET_ENV_NAMES:
-        client_secret = os.environ.get(env_name, "").strip()
-        if client_secret:
-            break
+    client_secret = os.environ.get(_GITHUB_CLIENT_SECRET_ENV, "").strip()
     if not client_secret:
         raise click.ClickException(
-            "OAuth auth requires GHELPER_GITHUB_CLIENT_SECRET (or the legacy GH_RERUNNER_* names)."
+            "OAuth auth requires GHELPER_GITHUB_CLIENT_SECRET."
         )
     return client_id, client_secret
 
@@ -263,7 +259,7 @@ class JSONRPCServer:
     def __init__(
         self,
         token: Optional[str] = None,
-        cache_path: Path = Path.home() / ".ghelper-cache.json",
+        cache_path: Path = Path.home() / ".ghelper-cache.jsonl",
         session_path: Path = Path.home() / ".ghelper-sessions.json",
         trackers_path: Path = Path.home() / ".ghelper-trackers.json",
         repo_configs_path: Path = Path.home() / ".ghelper-repo-configs.json",
@@ -283,6 +279,13 @@ class JSONRPCServer:
         self.trackers_path = trackers_path
         self.repo_configs_path = repo_configs_path
         self._cache = self._load_cache()
+        # Count of single-record cache appends since the last full compaction;
+        # used to decide when to rewrite the JSONL log so it stays ~O(live entries).
+        self._cache_appends = 0
+        # Positional-token construction is deprecated in PyGithub in favor of
+        # auth=Auth.Token(...), but we keep it for compatibility with the older
+        # PyGithub releases (>=2.0) our floor allows. The DeprecationWarning is
+        # expected and harmless.
         self._gh: Optional[Github] = Github(token) if token else None
         if token:
             try:
@@ -472,7 +475,7 @@ class JSONRPCServer:
         target: str,
         attempts: int = 2,
         interval_seconds: int = 60,
-        auto_rerun: bool = True,
+        auto_rerun: bool = False,
         ignore_jobs: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         target = _normalize_target_url(str(target or "").strip())
@@ -687,7 +690,7 @@ class JSONRPCServer:
                     "retries_exhausted": bool(raw.get("retries_exhausted", False)),
                     "interval_seconds": int(raw.get("interval_seconds", 60) or 60),
                     "active": bool(raw.get("active", True)),
-                    "auto_rerun": bool(raw.get("auto_rerun", True)),
+                    "auto_rerun": bool(raw.get("auto_rerun", False)),
                     "last_detail": str(raw.get("last_detail", "")),
                     "last_error": str(raw.get("last_error", "")),
                     "last_action": str(raw.get("last_action", "")),
@@ -914,7 +917,11 @@ class JSONRPCServer:
             if not isinstance(prs, dict):
                 self._cache["prs"] = {}
                 prs = self._cache["prs"]
-            prs["%s#%d" % (repo_name, pr_number)] = {
+            # Authoritative sync: each poll overwrites the entry with a freshly
+            # computed CI verdict and a new ts, so the cache never goes stale for
+            # a live tracker (the CLI's TTL only bounds one-shot reads).
+            pr_key = "%s#%d" % (repo_name, pr_number)
+            prs[pr_key] = {
                 "ts": time.time(),
                 "branch": branch,
                 "detail": detail,
@@ -923,7 +930,9 @@ class JSONRPCServer:
                 "backport_target": backport_target,
                 "is_merged": bool(getattr(pr, "merged", False)),
             }
-            self._save_cache()
+            entry = prs[pr_key]
+            _evict_pr_cache_fifo(prs)
+            self._persist_cache_record("pr", pr_key, entry)
 
             try:
                 runs = list(repo.get_workflow_runs(head_sha=pr.head.sha))
@@ -932,8 +941,8 @@ class JSONRPCServer:
 
             # A single workflow file can produce multiple runs for the same SHA
             # (e.g. when triggered by both `push` and `pull_request`). Keep only
-            # the most recent run per workflow so the rerunner doesn't act on
-            # stale duplicates and the UI doesn't render the same job twice.
+            # the most recent run per workflow so the auto-rerun logic doesn't act
+            # on stale duplicates and the UI doesn't render the same job twice.
             # `get_workflow_runs` returns runs newest-first, so the first
             # occurrence of each key wins.
             deduped_runs: list[Any] = []
@@ -1009,7 +1018,7 @@ class JSONRPCServer:
                 if isinstance(raw_ra, dict) else {}
             )
             attempts_total = int(tracker.get("attempts_total", 0) or 0)
-            auto_rerun = bool(tracker.get("auto_rerun", True))
+            auto_rerun = bool(tracker.get("auto_rerun", False))
             # Reuse the effective ignore set already computed for _pick_pr_status.
             ignored = _effective_ignore
             # Map run-id → lowercased failed_jobs for the already-fetched window.
@@ -1104,33 +1113,53 @@ class JSONRPCServer:
             return True
 
     def _load_cache(self) -> dict[str, Any]:
-        """Load cache from disk"""
-        if not self.cache_path.exists():
-            return {"prs": {}}
-        try:
-            data = json.loads(self.cache_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return {"prs": {}}
-            prs = data.get("prs")
-            if not isinstance(prs, dict):
-                data["prs"] = {}
-            return data
-        except Exception as e:
-            logger.error("Failed to load cache: %s", e)
-            return {"prs": {}}
+        """Load the JSONL PR/run cache from disk (see cli._read_cache_jsonl)."""
+        if self.cache_path.exists():
+            return _read_cache_jsonl(self.cache_path)
+        # One-time migration from the pre-JSONL single-blob cache (default path only).
+        if self.cache_path.suffix == ".jsonl":
+            legacy = self.cache_path.with_suffix(".json")
+            if legacy.exists():
+                try:
+                    data = json.loads(legacy.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        if not isinstance(data.get("prs"), dict):
+                            data["prs"] = {}
+                        if not isinstance(data.get("runs"), dict):
+                            data["runs"] = {}
+                        return data
+                except Exception as e:
+                    logger.error("Failed to load legacy cache: %s", e)
+        return {"prs": {}, "runs": {}}
 
     def _save_cache(self) -> None:
-        """Save cache to disk"""
+        """Compact: atomically rewrite the whole JSONL cache from memory."""
         try:
-            prs = self._cache.get("prs", {})
-            if not isinstance(prs, dict):
+            if not isinstance(self._cache.get("prs"), dict):
                 self._cache["prs"] = {}
-            data = json.dumps(self._cache, indent=2, sort_keys=True) + "\n"
-            tmp = self.cache_path.with_suffix(".tmp")
-            tmp.write_text(data, encoding="utf-8")
-            os.replace(tmp, self.cache_path)
+            _evict_pr_cache_fifo(self._cache["prs"])
+            _write_cache_jsonl(self.cache_path, self._cache)
+            self._cache_appends = 0
         except Exception as e:
             logger.error("Failed to save cache: %s", e)
+
+    def _persist_cache_record(self, kind: str, key: str, entry: dict[str, Any]) -> None:
+        """Append one just-written cache record, compacting once the log bloats.
+
+        The hot path (per-poll PR/run writes) appends a single line instead of
+        rewriting the whole file. We compact once appended (superseded) lines
+        roughly double the live set, keeping the file ~O(live entries).
+        """
+        try:
+            _append_cache_record(self.cache_path, kind, key, entry)
+            self._cache_appends += 1
+            prs = self._cache.get("prs", {})
+            runs = self._cache.get("runs", {})
+            live = (len(prs) if isinstance(prs, dict) else 0) + (len(runs) if isinstance(runs, dict) else 0)
+            if self._cache_appends > max(256, live):
+                self._save_cache()  # resets _cache_appends
+        except Exception as e:
+            logger.error("Failed to persist cache record %s/%s: %s", kind, key, e)
 
     def _load_sessions(self) -> list[dict[str, Any]]:
         """Load sessions from disk"""
@@ -1294,7 +1323,9 @@ class JSONRPCServer:
                 "source_pr": source_pr,
                 "is_merged": is_merged,
             }
-            self._save_cache()
+            entry = prs[key]
+            _evict_pr_cache_fifo(prs)
+            self._persist_cache_record("pr", key, entry)
             logger.info("Pushed status for %s", key)
             return {"ack": True, "key": key}
         except Exception as e:
@@ -1465,7 +1496,7 @@ class JSONRPCServer:
         target: str,
         attempts: int = 2,
         interval_seconds: int = 60,
-        auto_rerun: bool = True,
+        auto_rerun: bool = False,
         ignore_jobs: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         target = _normalize_target_url(str(target or "").strip())
@@ -1523,7 +1554,7 @@ class JSONRPCServer:
         targets_text: str,
         attempts: int = 2,
         interval_seconds: int = 60,
-        auto_rerun: bool = True,
+        auto_rerun: bool = False,
         ignore_jobs: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         text = str(targets_text or "").strip()
@@ -2010,13 +2041,14 @@ class JSONRPCServer:
                 self._cache["runs"] = {}
                 runs = self._cache["runs"]
 
-            runs[str(run_id)] = {
+            run_key = str(run_id)
+            runs[run_key] = {
                 "ts": time.time(),
                 "status": status,
                 "conclusion": conclusion,
                 "workflow_name": workflow_name,
             }
-            self._save_cache()
+            self._persist_cache_record("run", run_key, runs[run_key])
             logger.info("Pushed run status for %s: %s", run_id, status)
             return {"ack": True, "run_id": str(run_id)}
         except Exception as e:

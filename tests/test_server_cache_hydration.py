@@ -10,24 +10,28 @@ def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _write_cache(path: Path, prs: dict) -> None:
+    """Write the PR status cache in the JSONL format the server now reads."""
+    lines = [json.dumps({"k": "pr", "id": key, **entry}, sort_keys=True) for key, entry in prs.items()]
+    path.write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
+
+
 def test_server_startup_rehydrates_tracker_meta_from_cache(tmp_path: Path):
     cache_path = tmp_path / "cache.json"
     trackers_path = tmp_path / "trackers.json"
     sessions_path = tmp_path / "sessions.json"
 
-    _write_json(
+    _write_cache(
         cache_path,
         {
-            "prs": {
-                "org/repo#123": {
-                    "ts": 1,
-                    "branch": "mergify/bp/release-3.11/pr-123",
-                    "detail": "CI failed",
-                    "title": "chore(backport): fix flaky retry",
-                    "source_pr": 456,
-                    "backport_target": "release-3.11",
-                    "is_merged": False,
-                }
+            "org/repo#123": {
+                "ts": 1,
+                "branch": "mergify/bp/release-3.11/pr-123",
+                "detail": "CI failed",
+                "title": "chore(backport): fix flaky retry",
+                "source_pr": 456,
+                "backport_target": "release-3.11",
+                "is_merged": False,
             }
         },
     )
@@ -85,19 +89,17 @@ def test_tracker_update_without_token_preserves_existing_meta(tmp_path: Path):
     trackers_path = tmp_path / "trackers.json"
     sessions_path = tmp_path / "sessions.json"
 
-    _write_json(
+    _write_cache(
         cache_path,
         {
-            "prs": {
-                "org/repo#42": {
-                    "ts": 1,
-                    "branch": "feature/x",
-                    "detail": "CI pending",
-                    "title": "feat: keep cached metadata",
-                    "source_pr": 0,
-                    "backport_target": "",
-                    "is_merged": False,
-                }
+            "org/repo#42": {
+                "ts": 1,
+                "branch": "feature/x",
+                "detail": "CI pending",
+                "title": "feat: keep cached metadata",
+                "source_pr": 0,
+                "backport_target": "",
+                "is_merged": False,
             }
         },
     )
@@ -140,7 +142,7 @@ def test_tracker_add_collapses_case_differing_targets(tmp_path: Path):
     cache_path = tmp_path / "cache.json"
     trackers_path = tmp_path / "trackers.json"
     sessions_path = tmp_path / "sessions.json"
-    _write_json(cache_path, {"prs": {}})
+    _write_cache(cache_path, {})
     _write_json(trackers_path, [])
 
     server = JSONRPCServer(
@@ -163,7 +165,7 @@ def test_load_trackers_dedupes_case_differing_targets(tmp_path: Path):
     cache_path = tmp_path / "cache.json"
     trackers_path = tmp_path / "trackers.json"
     sessions_path = tmp_path / "sessions.json"
-    _write_json(cache_path, {"prs": {}})
+    _write_cache(cache_path, {})
 
     base = {
         "attempts_total": 2,

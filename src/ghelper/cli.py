@@ -128,15 +128,23 @@ _CONFIG_PATH = Path.home() / ".ghelper.json"
 # enforced by the server / web UI. Kept separate from ~/.ghelper.json so the export
 # bundle can mirror exactly what the running server reads.
 _REPO_CONFIGS_PATH = Path.home() / ".ghelper-repo-configs.json"
-_PR_STATUS_CACHE_PATH = Path.home() / ".ghelper-cache.json"
+_PR_STATUS_CACHE_PATH = Path.home() / ".ghelper-cache.jsonl"
+# Pre-JSONL single-blob cache. Read once if the JSONL file doesn't exist yet so
+# upgrading users keep their cached (esp. merged-PR) entries; the next save
+# rewrites it in JSONL form.
+_LEGACY_PR_STATUS_CACHE_PATH = Path.home() / ".ghelper-cache.json"
 _PR_STATUS_CACHE_TTL_SECONDS = 3600  # 1 hour
+# FIFO cap on cached PR entries. The cache gains one entry per distinct PR seen
+# across `ls` / `watch` / the server poll; without a bound it grows forever
+# (sessions are capped at _MAX_SESSIONS, this was not). Oldest-by-timestamp wins
+# eviction once the cap is exceeded.
+_MAX_PR_CACHE_ENTRIES = 2000
 _SESSION_PATH = Path.home() / ".ghelper-sessions.json"
 _MAX_SESSIONS = 20
 _GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
 _GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
 _DEFAULT_GITHUB_CLIENT_ID = "Ov23lio3O4l5m3CE589o"
 _DEFAULT_GITHUB_CLIENT_ID_ENV = "GHELPER_GITHUB_CLIENT_ID"
-_LEGACY_GITHUB_CLIENT_ID_ENVS = ("GH_RERUNNER_GITHUB_CLIENT_ID", "GH_RERUNNER_OAUTH_CLIENT_ID")
 _DEFAULT_REPO_CONFIG = {
     "ignore_ci": [],
     "required_labels": [],
@@ -337,29 +345,164 @@ def _optional_token_option_callback(
     return None
 
 
-def _load_pr_status_cache() -> dict[str, Any]:
-    if not _PR_STATUS_CACHE_PATH.exists():
-        return {"prs": {}}
+# ---------------------------------------------------------------------------
+# PR/run status cache persistence (JSONL)
+#
+# The cache is stored as JSON Lines: one self-contained record per line,
+# ``{"k": "pr"|"run", "id": <key>, ...fields}``. This keeps the file
+# line-oriented (no global brace matching, greppable, robust to a corrupt line)
+# and append-friendly — the server appends a single line per update instead of
+# rewriting the whole blob, and compacts (full rewrite) periodically. Later
+# lines win on load (last-write-wins per key), mirroring the in-memory dict.
+# The in-memory shape stays ``{"prs": {key: {...}}, "runs": {key: {...}}}`` so
+# every reader/writer is unchanged; only persistence differs.
+# ---------------------------------------------------------------------------
+
+_CACHE_KIND_TO_BUCKET = {"pr": "prs", "run": "runs"}
+_CACHE_BUCKET_TO_KIND = {"prs": "pr", "runs": "run"}
+
+
+def _cache_record_line(kind: str, key: str, entry: dict[str, Any]) -> str:
+    """Serialize one cache entry as a single JSONL record line (no trailing newline)."""
+    record = {"k": kind, "id": key}
+    record.update(entry)
+    return json.dumps(record, sort_keys=True)
+
+
+def _read_cache_jsonl(path: Path) -> dict[str, Any]:
+    """Parse a JSONL cache file into ``{"prs": {...}, "runs": {...}}``.
+
+    Malformed or unknown-kind lines are skipped (a single bad line never poisons
+    the whole cache). Later lines override earlier ones for the same id, and the
+    FIFO cap is applied to ``prs`` on load.
+    """
+    data: dict[str, Any] = {"prs": {}, "runs": {}}
     try:
-        data = json.loads(_PR_STATUS_CACHE_PATH.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
     except Exception:
-        return {"prs": {}}
-    if not isinstance(data, dict):
-        return {"prs": {}}
-    prs = data.get("prs")
-    if not isinstance(prs, dict):
-        data["prs"] = {}
+        return data
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(record, dict):
+            continue
+        bucket = _CACHE_KIND_TO_BUCKET.get(str(record.get("k", "")))
+        key = record.get("id")
+        if not bucket or not isinstance(key, str):
+            continue
+        entry = {k: v for k, v in record.items() if k not in ("k", "id")}
+        data[bucket][key] = entry
+    _evict_pr_cache_fifo(data["prs"])
     return data
 
 
+def _load_pr_status_cache() -> dict[str, Any]:
+    if _PR_STATUS_CACHE_PATH.exists():
+        return _read_cache_jsonl(_PR_STATUS_CACHE_PATH)
+    # One-time read of the pre-JSONL single-blob cache, if present.
+    if _LEGACY_PR_STATUS_CACHE_PATH.exists():
+        try:
+            data = json.loads(_LEGACY_PR_STATUS_CACHE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                if not isinstance(data.get("prs"), dict):
+                    data["prs"] = {}
+                if not isinstance(data.get("runs"), dict):
+                    data["runs"] = {}
+                _evict_pr_cache_fifo(data["prs"])
+                return data
+        except Exception:
+            pass
+    return {"prs": {}, "runs": {}}
+
+
+def _write_cache_jsonl(path: Path, data: dict[str, Any]) -> None:
+    """Atomically (tmp + os.replace) rewrite the whole cache as JSONL — i.e. compact.
+
+    Used for batch saves and to compact away superseded/evicted lines accumulated
+    by appends. The atomic replace means a crash mid-write can't truncate the file
+    (the shared CLI/server file would otherwise reset to empty on the next load).
+    """
+    lines: list[str] = []
+    for bucket, kind in _CACHE_BUCKET_TO_KIND.items():
+        entries = data.get(bucket)
+        if not isinstance(entries, dict):
+            continue
+        for key, entry in entries.items():
+            if isinstance(entry, dict):
+                lines.append(_cache_record_line(kind, str(key), entry))
+    payload = ("\n".join(lines) + "\n") if lines else ""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _append_cache_record(path: Path, kind: str, key: str, entry: dict[str, Any]) -> None:
+    """Append a single cache record line. O_APPEND keeps small lines atomic per write,
+    so concurrent CLI/server appends interleave by whole lines rather than corrupting."""
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(_cache_record_line(kind, key, entry) + "\n")
+
+
 def _save_pr_status_cache(data: dict[str, Any]) -> None:
-    if "prs" not in data or not isinstance(data["prs"], dict):
+    if not isinstance(data.get("prs"), dict):
         data["prs"] = {}
-    _PR_STATUS_CACHE_PATH.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _evict_pr_cache_fifo(data["prs"])
+    _write_cache_jsonl(_PR_STATUS_CACHE_PATH, data)
 
 
 def _pr_cache_key(repo_name: str, pr_number: int) -> str:
     return f"{repo_name}#{pr_number}"
+
+
+# How authoritative a cached PR ``detail`` string is. A status sync (`ls` or the
+# server poll) writes a real CI verdict; the `watch` bootstrap only has the
+# backport-tracker summary hint. When two writers touch the same repo#pr key we
+# keep the more authoritative detail so a weak hint cannot clobber a freshly
+# synced real result ("more real wins").
+_STATUS_REALNESS = {
+    "merged": 4, "closed": 4,
+    "ci failed": 3, "ci passed": 3, "failure": 3, "success": 3,
+    "ci pending": 2, "pending": 2, "fetching": 2,
+    "ci unavailable": 1,
+}
+
+# Map the backport-tracker summary hint (what `watch` has on hand) onto the same
+# CI-verdict vocabulary that `ls` / the server poll cache, so every writer stores
+# the same thing rather than two parallel dialects.
+_STATUS_DETAIL_NORMALIZE = {
+    "merged": "Merged", "closed": "Closed",
+    "failure": "CI failed", "success": "CI passed",
+    "pending": "CI pending", "fetching": "CI pending",
+}
+
+
+def _status_realness(detail: str) -> int:
+    return _STATUS_REALNESS.get((detail or "").strip().lower(), 0)
+
+
+def _normalize_status_detail(detail: str) -> str:
+    """Canonicalize a status hint to the shared CI-verdict vocabulary ("" if unknown)."""
+    d = (detail or "").strip()
+    return _STATUS_DETAIL_NORMALIZE.get(d.lower(), "" if d.lower() == "unknown" else d)
+
+
+def _evict_pr_cache_fifo(prs: dict[str, Any], max_entries: int = _MAX_PR_CACHE_ENTRIES) -> None:
+    """Drop the oldest cached PR entries (by timestamp) once *prs* exceeds the cap."""
+    if not isinstance(prs, dict) or len(prs) <= max_entries:
+        return
+
+    def _ts(item: tuple[str, Any]) -> float:
+        raw = item[1].get("ts") if isinstance(item[1], dict) else None
+        return float(raw) if isinstance(raw, (int, float)) else 0.0
+
+    # Oldest first; entries lacking a usable ts sort as oldest and are evicted first.
+    for key, _ in sorted(prs.items(), key=_ts)[: len(prs) - max_entries]:
+        prs.pop(key, None)
 
 
 def _get_cached_pr_status(
@@ -377,7 +520,12 @@ def _get_cached_pr_status(
     ts = raw.get("ts")
     if not isinstance(ts, (int, float)):
         return None
-    # Skip TTL check for merged PRs—they don't change
+    # Staleness is bounded two ways, which matters for long-running CIs:
+    #   * Merged PRs are terminal, so we skip the TTL and serve them indefinitely.
+    #   * For everything else the TTL caps how stale a one-shot read can be, and
+    #     an actively-watching server re-runs `_pick_pr_status` every poll and
+    #     overwrites this entry with a fresh ts (server.py `_update_tracker`), so
+    #     a sync invalidates the cache continuously while a tracker is live.
     is_merged = bool(raw.get("is_merged", False))
     if not is_merged and time.time() - float(ts) > ttl_seconds:
         return None
@@ -411,12 +559,32 @@ def _set_cached_pr_status(
     source_pr: int = 0,
     is_merged: bool = False,
     backport_target: str = "",
+    authoritative: bool = True,
 ) -> None:
+    """Write a PR status entry to the shared cache.
+
+    *authoritative* writers (`ls`, the server poll) carry a freshly fetched CI
+    verdict and always win. Non-authoritative writers (the `watch` bootstrap,
+    which only has the backport-tracker summary hint) normalize their detail into
+    the shared vocabulary and must not downgrade an already-cached real verdict —
+    "more real wins" — so the two commands stop overwriting each other with
+    differently-derived statuses for the same repo#pr key.
+    """
     prs = cache_data.setdefault("prs", {})
     if not isinstance(prs, dict):
         cache_data["prs"] = {}
         prs = cache_data["prs"]
-    prs[_pr_cache_key(repo_name, pr_number)] = {
+
+    detail = _normalize_status_detail(detail)
+    key = _pr_cache_key(repo_name, pr_number)
+    if not authoritative:
+        existing = prs.get(key)
+        if isinstance(existing, dict):
+            existing_detail = str(existing.get("detail", "") or "")
+            if _status_realness(detail) <= _status_realness(existing_detail):
+                detail = existing_detail
+
+    prs[key] = {
         "ts": time.time(),
         "branch": branch,
         "detail": detail,
@@ -425,6 +593,7 @@ def _set_cached_pr_status(
         "is_merged": is_merged,
         "backport_target": backport_target,
     }
+    _evict_pr_cache_fifo(prs)
 
 
 # ---------------------------------------------------------------------------
@@ -1593,11 +1762,6 @@ def _device_flow_client_id() -> str:
     """Read the GitHub OAuth app client ID used for device authorization."""
     client_id = os.environ.get(_DEFAULT_GITHUB_CLIENT_ID_ENV, "").strip()
     if not client_id:
-        for _legacy_env in _LEGACY_GITHUB_CLIENT_ID_ENVS:
-            client_id = os.environ.get(_legacy_env, "").strip()
-            if client_id:
-                break
-    if not client_id:
         client_id = _DEFAULT_GITHUB_CLIENT_ID
     if not client_id:
         raise click.ClickException("Device flow requires a GitHub OAuth client ID.")
@@ -1685,7 +1849,12 @@ def _poll_device_token(client_id: str, device_code: str, interval: int, expires_
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def main() -> None:
-    """Headless GitHub Actions auto-rerunner.\n
+    """A third-party dashboard for your GitHub PRs and CI.\n
+    \b
+    Track the PRs you care about and see their checks, reviews, and
+    failed-job logs in one place — as a terminal TUI or a web UI.
+    Auto-rerun of failed CI is available as an opt-in (`watch --rerun`).
+
     \b
     Run `ghelper auth` to get a link for creating a token with the
     minimum required permissions.
@@ -2084,7 +2253,14 @@ def assigned_prs_cmd(
     type=int,
     default=3,
     show_default=True,
-    help="Maximum rerun attempts per run before giving up.",
+    help="Maximum rerun attempts per run before giving up (only applies with --rerun).",
+)
+@click.option(
+    "--rerun/--no-rerun",
+    "auto_rerun",
+    default=False,
+    show_default=True,
+    help="Automatically re-run failed CI for tracked PRs (default: off — dashboard only).",
 )
 @click.option(
     "-i", "--interval",
@@ -2161,6 +2337,7 @@ def run_cmd(
     token: Optional[str],
     repo_opt: Optional[str],
     max_retries: int,
+    auto_rerun: bool,
     interval: int,
     ignore_ci: tuple[str, ...],
     assigned: bool,
@@ -2173,7 +2350,7 @@ def run_cmd(
     no_tui: bool,
     quiet: bool,
 ) -> None:
-    """Supervise PRs / workflow runs and auto-rerun failed jobs.
+    """Dashboard for PRs / workflow runs — live CI status, logs, optional auto-rerun.
 
     \b
     TARGETS can be any mix of:
@@ -2390,11 +2567,15 @@ def run_cmd(
                         repo_name,
                         pr_num,
                         branch=branch,
-                        detail=str(entry.status or "unknown"),
+                        # Only the summary hint is available here — write it
+                        # non-authoritatively so it can't downgrade a real CI
+                        # verdict already cached by `ls` or the server poll.
+                        detail=str(entry.status or ""),
                         title=title,
                         source_pr=meta.get("backport_source_pr", 0),
                         is_merged=is_merged,
                         backport_target=str(meta.get("backport_target", "") or ""),
+                        authoritative=False,
                     )
                     pr_cache_changed = True
                 except GithubException:
@@ -2439,14 +2620,15 @@ def run_cmd(
 
     _rpc_server = JSONRPCServer(token=token)
     # Seed trackers from every CLI-resolved target so they're managed identically
-    # to web-UI/RPC-added ones. auto_rerun=True hands retry duty to the server.
+    # to web-UI/RPC-added ones. auto_rerun (off unless --rerun) hands retry duty
+    # to the server.
     for _t_url in list(target_state.keys()):
         try:
             _tracker_dict = _rpc_server.submit_tracker_sync(
                 target=_t_url,
                 attempts=max_retries,
                 interval_seconds=interval,
-                auto_rerun=True,
+                auto_rerun=auto_rerun,
                 ignore_jobs=effective_ignore_ci,
             )
             target_state[_t_url]["tracker_id"] = int(_tracker_dict.get("id", 0))
@@ -3129,7 +3311,7 @@ def run_cmd(
                     target=url,
                     attempts=max_retries,
                     interval_seconds=interval,
-                    auto_rerun=True,
+                    auto_rerun=auto_rerun,
                     ignore_jobs=effective_ignore_ci,
                 )
                 added += 1

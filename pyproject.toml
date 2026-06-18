@@ -5,10 +5,10 @@ build-backend = "hatchling.build"
 [project]
 name = "ghelper"
 version = "0.1.0"
-description = "Headless GitHub Actions CI auto-rerunner"
+description = "A third-party dashboard for GitHub PRs and CI, with optional auto-rerun"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-keywords = ["github", "actions", "ci", "rerun", "automation"]
+keywords = ["github", "pull-requests", "ci", "dashboard", "actions", "rerun"]
 dependencies = [
     "PyGithub>=2.0",
     "click>=8.0",

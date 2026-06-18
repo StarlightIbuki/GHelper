@@ -355,7 +355,7 @@
                     <svg aria-hidden="true" height="20" viewBox="0 0 16 16" width="20" data-view-component="true" class="octicon" style="fill: var(--text);">
                         <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm4.879-2.773 4.264 2.559a.25.25 0 0 1 0 .428l-4.264 2.559A.25.25 0 0 1 6 10.559V5.44a.25.25 0 0 1 .379-.213Z"></path>
                     </svg>
-                    PR CI Rerunner
+                    PR &amp; CI Dashboard
                 </h1>
                 <div class="auth-status">
                     <span id="authStatus">Checking session...</span>
@@ -410,7 +410,7 @@
                     </div>
                     <div style="display:flex; align-items:flex-end; padding-bottom:1px;">
                         <label style="font-size: 13px; font-weight: 500; margin: 0; display:flex; align-items:center; gap:6px; cursor:pointer;">
-                            <input id="wizardAuto" type="checkbox" checked style="margin:0; width:16px; height:16px;" /> Auto-rerun
+                            <input id="wizardAuto" type="checkbox" style="margin:0; width:16px; height:16px;" /> Auto-rerun
                         </label>
                     </div>
                 </div>
@@ -527,7 +527,7 @@
             <input type="number" class="bulk-retry-input" id="bulk-set-interval" value="60" min="10" max="3600">
         </label>
         <label class="bulk-retry-label" style="gap:6px;">
-            <input type="checkbox" id="bulk-set-auto" checked>
+            <input type="checkbox" id="bulk-set-auto">
             Auto-rerun
         </label>
         <span class="bulk-bar-sep">|</span>
@@ -1897,7 +1897,7 @@
             if (!ids.length) return;
             const attempts  = parseInt(document.getElementById('bulk-set-attempts')?.value ?? '3', 10);
             const interval  = parseInt(document.getElementById('bulk-set-interval')?.value ?? '60', 10);
-            const autoRerun = document.getElementById('bulk-set-auto')?.checked ?? true;
+            const autoRerun = document.getElementById('bulk-set-auto')?.checked ?? false;
             for (const id of ids) {
                 await sendRpc({
                     jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate',
@@ -2063,7 +2063,7 @@
                     : `${trackerRows.length} PRs tracked • Auto-refreshing`);
 
             if (!trackerRows.length) {
-                trackerTreeEl.innerHTML = `<div class="empty-state"><h3>No active trackers</h3><p>Track a PR to monitor CI status and auto-rerun failed jobs.</p></div>`;
+                trackerTreeEl.innerHTML = `<div class="empty-state"><h3>No PRs tracked yet</h3><p>Add a PR to see its CI checks, reviews, and failed-job logs at a glance — with optional auto-rerun.</p></div>`;
                 return;
             }
             if (!displayRows.length) {
@@ -2198,7 +2198,7 @@
         async function trackerSaveSettings(id) {
             const attempts  = parseInt(document.getElementById(`set-attempts-${id}`)?.value ?? '2', 10);
             const interval  = parseInt(document.getElementById(`set-interval-${id}`)?.value ?? '60', 10);
-            const autoRerun = document.getElementById(`set-auto-${id}`)?.checked ?? true;
+            const autoRerun = document.getElementById(`set-auto-${id}`)?.checked ?? false;
             const data = await sendRpc({
                 jsonrpc: '2.0', id: nextId++, method: 'trackerUpdate',
                 params: { tracker_id: id, attempts_total: attempts, interval_seconds: interval, auto_rerun: autoRerun },

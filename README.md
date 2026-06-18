@@ -1,8 +1,18 @@
 # ghelper
 
-A headless Python CLI that polls GitHub Actions workflow runs and automatically re-runs failed jobs — designed to keep running on a server even when your laptop is off.
+A self-hosted, third-party dashboard for your GitHub pull requests and CI. ghelper
+tracks the PRs you care about and shows their check status, reviews, and
+failed-job logs in one place — as a terminal TUI or a web UI — so you don't have
+to bounce between GitHub tabs to see where everything stands.
 
-Pairs naturally with the **Backport Tracker** userscript: pipe its copy-summary output directly into `ghelper watch` for a fast workflow.
+Think of it as a focused status board for *the PRs you're shepherding right now*:
+paste in PR or run URLs (or pull in everything assigned to you), watch their CI
+live, drill into the first failing job's log without leaving the page, and group
+backport PRs together. Because it runs as a server, the board stays current even
+when your laptop is off — and it can optionally re-run failed CI for you while
+you're away, so a flaky job doesn't block a PR overnight.
+
+Pairs naturally with the **Backport Tracker** userscript: pipe its copy-summary output directly into `ghelper watch` to populate the dashboard.
 
 ## Requirements
 
@@ -98,18 +108,24 @@ You can still override the embedded client ID by setting
 | Command | What it does |
 |---|---|
 | `ghelper auth` | Start device flow by default; `--pat` keeps PAT mode |
-| `ghelper watch [TARGETS]...` | Supervisor: TUI + auto-rerun + optional HTTP server |
+| `ghelper watch [TARGETS]...` | The dashboard: live PR/CI status as a TUI and/or web UI, with optional auto-rerun |
 | `ghelper ls` | List assigned PRs as Backport-Tracker-compatible markdown |
 | `ghelper logs [TARGETS]...` | Print failed-job logs (`--grep` to filter) |
 | `ghelper config show \| set \| clear` | Manage per-repo defaults at `~/.ghelper.json` |
 | `ghelper config edit-log-filter` | Edit the per-repo failed-CI log-extraction filter in `$EDITOR` |
 | `ghelper config export \| import` | Back up / restore a repo's full config (requirements + log filter) |
 
-`watch` is the canonical supervisor. The TUI is just an interface for an embedded server — the same tracker model is exposed over HTTP/JSON-RPC and the web UI when `--serve` is set, and you can drive it headlessly with `--serve --no-tui`.
+`watch` is the dashboard itself. The TUI is just one front-end onto an embedded server — the same tracker model is exposed over HTTP/JSON-RPC and the web UI when `--serve` is set, and you can run it purely as a headless server with `--serve --no-tui`. Auto-rerun is a per-tracker option layered on top of the live view, not the point of the tool.
 
 ---
 
 ## `ghelper watch`
+
+Opens the dashboard over a set of tracked targets. Each target becomes a row
+showing its live CI checks, review/label state, and (on demand) the first
+failing job's log; runs against the same repo are grouped, and backport sets are
+collapsed together. Add `--serve` for the web UI, or `--serve --no-tui` to run it
+as a pure background server.
 
 ```
 ghelper watch [OPTIONS] [TARGETS]...
@@ -132,7 +148,8 @@ You can also pipe markdown summaries (e.g. from `ghelper ls` or Backport Tracker
 |---|---|---|
 | `-t, --token` | `$GITHUB_TOKEN` | GitHub PAT (required) |
 | `-R, --repo OWNER/REPO` | — | Required for bare run IDs |
-| `-n, --retries N` | `3` | Maximum rerun attempts per run |
+| `--rerun` / `--no-rerun` | `--no-rerun` | Auto-rerun failed CI for tracked PRs (off by default — dashboard only) |
+| `-n, --retries N` | `3` | Maximum rerun attempts per run (only applies with `--rerun`) |
 | `-i, --interval SECS` | `30` | Server-side polling interval |
 | `--ignore JOB` | — | CI job substring to ignore; repeatable |
 | `-a, --assigned` | off | Watch PRs assigned to the current user |
@@ -148,8 +165,7 @@ You can also pipe markdown summaries (e.g. from `ghelper ls` or Backport Tracker
 The embedded server also exposes `GET /auth`. Pass `?code=...` to exchange an
 OAuth code for a token, or `?token=...` to set a PAT directly. The OAuth code
 exchange requires `GHELPER_GITHUB_CLIENT_ID` and
-`GHELPER_GITHUB_CLIENT_SECRET` (or the legacy `GH_RERUNNER_*`
-names).
+`GHELPER_GITHUB_CLIENT_SECRET`.
 
 ### TUI shortcuts (in `watch`)
 
@@ -288,8 +304,8 @@ ghelper config import -R owner/repo config.json
 # Export assigned PRs in backport-tracker format
 ghelper ls
 
-# Pipe to watch
-ghelper ls | ghelper watch -n 5
+# Pipe to watch (dashboard only)
+ghelper ls | ghelper watch
 
 # Watch a single Actions run
 ghelper watch https://github.com/owner/repo/actions/runs/12345
@@ -300,8 +316,8 @@ ghelper watch https://github.com/owner/repo/pull/456
 # Bare run ID — requires -R
 ghelper watch -R owner/repo 12345
 
-# Up to 5 retries, check every minute
-ghelper watch -n 5 -i 60 https://github.com/owner/repo/pull/456
+# Opt into auto-rerun: up to 5 retries, check every minute
+ghelper watch --rerun -n 5 -i 60 https://github.com/owner/repo/pull/456
 
 # Ignore two CI jobs
 ghelper watch --ignore lint --ignore docs https://github.com/owner/repo/pull/456
@@ -351,19 +367,22 @@ in the web UI's **Add Targets** import box.
 
 ---
 
-## Running on a server
+## Hosting the dashboard
+
+Run it on a small box so the dashboard is always live and reachable from a
+browser, independent of your laptop:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e /path/to/gh-helper
 export GITHUB_TOKEN=ghp_...
 
-# Headless: HTTP server + tracker engine, no TUI
+# Headless: web UI + tracker engine, no TUI
 nohup ghelper watch --serve --no-tui --host 0.0.0.0 --port 9999 \
   >> ~/ghelper.log 2>&1 &
 ```
 
-Trackers persist in `~/.ghelper-trackers.json`, so the server can be restarted without losing state. Connect to the web UI at `http://<host>:9999/` or drive it via `POST /rpc`.
+Trackers persist in `~/.ghelper-trackers.json`, so the server can be restarted without losing state. Open the dashboard at `http://<host>:9999/` or drive it via `POST /rpc`.
 
 ---
 
